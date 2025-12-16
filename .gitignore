@@ -1,0 +1,4 @@
+/dev-doc
+*.db
+.conda/
+__pycache__/

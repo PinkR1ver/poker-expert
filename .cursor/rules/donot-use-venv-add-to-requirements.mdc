@@ -1,0 +1,9 @@
+---
+alwaysApply: true
+---
+
+# 环境管理规则
+
+1. **不要使用 venv**：不要创建或使用 Python 虚拟环境 (venv)
+2. **使用 Conda 环境**：项目使用 `.conda` 环境，通过 `conda activate` 激活
+3. **依赖管理**：所有需要的 Python 包都写入 `requirements.txt`，用户会自行使用 `pip install -r requirements.txt` 安装
