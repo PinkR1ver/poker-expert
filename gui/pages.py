@@ -1,12 +1,15 @@
 import os
 import datetime
 import numpy as np
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-                               QFrame, QTableView, QHeaderView, QPushButton,
-                               QFileDialog, QProgressBar, QSpacerItem, QSizePolicy,
-                               QComboBox, QCheckBox)
-from PySide6.QtCore import Qt, QAbstractTableModel, QThread, Signal, QDate
-from PySide6.QtGui import QColor, QBrush
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QFrame, QTableView, QHeaderView, QPushButton,
+    QFileDialog, QProgressBar, QSpacerItem, QSizePolicy,
+    QComboBox, QCheckBox, QListWidget, QListWidgetItem,
+    QTextEdit, QSplitter
+)
+from PySide6.QtCore import Qt, QAbstractTableModel, QThread, Signal, QDate, QTimer
+from PySide6.QtGui import QColor, QBrush, QPixmap, QIcon, QTextCursor
 
 # Matplotlib
 try:
@@ -16,9 +19,10 @@ except ImportError:
 from matplotlib.figure import Figure
 import matplotlib.dates as mdates
 
-from poker_parser import parse_file
+from poker_parser import parse_file, get_hand_by_id
 from db_manager import DBManager
 from gui.styles import PROFIT_GREEN, PROFIT_RED
+from gui.widgets import ReplayTableWidget
 
 # --- Helper Components ---
 
@@ -243,10 +247,13 @@ class DashboardPage(QWidget):
         self.lbl_rake.setStyleSheet("color: #f44336;")
         self.lbl_insurance = QLabel("Insurance: $0.00")
         self.lbl_insurance.setStyleSheet("color: #ff9800;")
+        self.lbl_jackpot = QLabel("Jackpot: $0.00")
+        self.lbl_jackpot.setStyleSheet("color: #9c27b0;")
         left_layout.addWidget(self.lbl_total_hands)
         left_layout.addWidget(self.lbl_net_won)
         left_layout.addWidget(self.lbl_rake)
         left_layout.addWidget(self.lbl_insurance)
+        left_layout.addWidget(self.lbl_jackpot)
         
         main_layout.addWidget(left_panel)
         
@@ -290,19 +297,26 @@ class DashboardPage(QWidget):
         # Graph
         self.plot_graph(start_date, end_date)
         
-        # Stats
-        hands = self.db.get_all_hands()
+        # Stats：需要和当前 filter 一致，所以使用相同的日期范围过滤
+        hands = self.db.get_hands_in_range(start_date, end_date) if hasattr(self.db, "get_hands_in_range") else self.db.get_all_hands()
         total_hands = len(hands)
         total_profit = sum(h[5] for h in hands) if hands else 0
-        total_rake = sum(h[6] for h in hands) if hands else 0
-        # insurance_premium is at index 14 (added via ALTER TABLE, so it's at the end)
-        total_insurance = sum(h[14] if len(h) > 14 and h[14] else 0 for h in hands) if hands else 0
+        total_rake = sum((h[6] or 0) for h in hands) if hands else 0
+        # insurance_premium 列在 schema 中是第 9 列（索引 8）
+        total_insurance = sum((row[8] or 0) for row in hands if len(row) > 8) if hands else 0
+        # jackpot 列在 schema 中是第 15 列（索引 14）
+        total_jackpot = sum((row[14] or 0) for row in hands if len(row) > 14) if hands else 0
+
+        # 你赢到 pot 的手（这里用 profit>0 近似“赢的局”，用于区分输赢局的费用统计）
+        won_rake = sum((row[6] or 0) for row in hands if (row[5] or 0) > 0) if hands else 0
+        won_jackpot = sum((row[14] or 0) for row in hands if len(row) > 14 and (row[5] or 0) > 0) if hands else 0
 
         self.lbl_total_hands.setText(f"Hands: {total_hands}")
         self.lbl_net_won.setText(f"Net: ${total_profit:.2f}")
         self.lbl_net_won.setStyleSheet(f"color: {PROFIT_GREEN if total_profit >= 0 else PROFIT_RED}; font-weight: bold;")
-        self.lbl_rake.setText(f"Rake: ${total_rake:.2f}")
+        self.lbl_rake.setText(f"Rake: ${total_rake:.2f}  (Won: ${won_rake:.2f})")
         self.lbl_insurance.setText(f"Insurance: ${total_insurance:.2f}")
+        self.lbl_jackpot.setText(f"Jackpot: ${total_jackpot:.2f}  (Won: ${won_jackpot:.2f})")
 
 
     def plot_graph(self, start_date=None, end_date=None):
@@ -378,6 +392,7 @@ class DashboardPage(QWidget):
         self.canvas.draw()
 
 class CashGamePage(QWidget):
+    hand_selected = Signal(str)
     def __init__(self, db_manager):
         super().__init__()
         self.db = db_manager
@@ -398,6 +413,7 @@ class CashGamePage(QWidget):
         self.table_view.setSelectionBehavior(QTableView.SelectRows)
         self.table_view.setAlternatingRowColors(True)
         self.table_view.setSortingEnabled(True)  # Enable column sorting
+        self.table_view.doubleClicked.connect(self.on_row_double_clicked)
         layout.addWidget(self.table_view)
 
         self.refresh_data()
@@ -406,10 +422,20 @@ class CashGamePage(QWidget):
         hands_data = self.db.get_all_hands()
         # Sort by date desc (newest first) as default
         hands_data.sort(key=lambda x: x[1] if x[1] else "", reverse=True)
+        self._hands_data = hands_data
         model = HandsTableModel(hands_data)
         self.table_view.setModel(model)
         # Set default sort indicator on Date column (column 0, descending)
         self.table_view.horizontalHeader().setSortIndicator(0, Qt.DescendingOrder)
+
+    def on_row_double_clicked(self, index):
+        if not hasattr(self, "_hands_data"):
+            return
+        row = index.row()
+        if 0 <= row < len(self._hands_data):
+            hand_id = self._hands_data[row][0]
+            if hand_id:
+                self.hand_selected.emit(str(hand_id))
 
 class ImportPage(QWidget):
     data_changed = Signal()
@@ -479,3 +505,550 @@ class ImportPage(QWidget):
         self.btn_import.setEnabled(True)
         self.data_changed.emit() # Notify main window to refresh
 
+
+class ReplayPage(QWidget):
+    """
+    Simple hand replayer page.
+    Layout（向 RIROPO 靠拢的简化版）:
+    - 左侧：手牌列表（可选）
+    - 中间：牌桌区域（背景图 + 座位 + 公共牌）
+    - 右侧：动作 / "chat" 区域
+    - 底部：导航按钮（Prev Hand / Prev Action / Play / Next Action / Next Hand）
+    """
+
+    def __init__(self, db_manager, show_hand_list=True):
+        super().__init__()
+        self.db = db_manager
+        # 是否在左侧显示手牌列表列（主界面可选牌时，弹窗可以关闭这列）
+        self.show_hand_list = show_hand_list
+        self.current_hand_id = None
+        self.current_hand = None
+        self.current_action_index = -1
+        self.actions = []
+        self.replay_timer = QTimer(self)
+        self.replay_timer.setInterval(800)
+        self.replay_timer.timeout.connect(self.next_action)
+        self.init_ui()
+
+    def init_ui(self):
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(16, 16, 16, 16)
+        main_layout.setSpacing(10)
+
+        title = QLabel("Hand Replayer")
+        title.setStyleSheet("font-size: 20px; font-weight: bold;")
+        main_layout.addWidget(title)
+
+        splitter = QSplitter(Qt.Horizontal)
+        main_layout.addWidget(splitter, 1)
+
+        # Left: hands list（可选）
+        if self.show_hand_list:
+            left_panel = QWidget()
+            left_layout = QVBoxLayout(left_panel)
+            left_layout.setContentsMargins(0, 0, 0, 0)
+            left_layout.setSpacing(6)
+
+            lbl_hands = QLabel("Hands")
+            lbl_hands.setStyleSheet("font-weight: bold;")
+            left_layout.addWidget(lbl_hands)
+
+            self.list_hands = QListWidget()
+            self.list_hands.itemDoubleClicked.connect(self.on_hand_item_double_clicked)
+            left_layout.addWidget(self.list_hands, 1)
+
+            splitter.addWidget(left_panel)
+
+        # Center: table area (canvas-style widget + info)
+        center_panel = QFrame()
+        center_panel.setObjectName("ReplayTable")
+        center_layout = QVBoxLayout(center_panel)
+        center_layout.setContentsMargins(0, 0, 0, 0)
+        center_layout.setSpacing(4)
+
+        self.table_widget = ReplayTableWidget()
+        center_layout.addWidget(self.table_widget, 1)
+
+        info_layout = QVBoxLayout()
+        info_layout.setContentsMargins(8, 4, 8, 0)
+        info_layout.setSpacing(2)
+
+        self.lbl_main_info = QLabel("Select a hand from the list or double-click in Cash Games.")
+        self.lbl_main_info.setStyleSheet("font-size: 13px;")
+        info_layout.addWidget(self.lbl_main_info)
+
+        self.lbl_hero = QLabel("")
+        self.lbl_board = QLabel("")
+        self.lbl_pot = QLabel("")
+        self.lbl_hero.setStyleSheet("font-weight: bold;")
+
+        info_layout.addWidget(self.lbl_hero)
+        info_layout.addWidget(self.lbl_board)
+        info_layout.addWidget(self.lbl_pot)
+
+        center_layout.addLayout(info_layout)
+
+        splitter.addWidget(center_panel)
+
+        # Right: "chat" / actions
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(6)
+
+        lbl_chat = QLabel("Actions")
+        lbl_chat.setStyleSheet("font-weight: bold;")
+        right_layout.addWidget(lbl_chat)
+
+        # 控制是否展示对手底牌
+        self.chk_show_villain = QCheckBox("Show Villain Cards")
+        self.chk_show_villain.setChecked(False)
+        self.chk_show_villain.stateChanged.connect(self.on_toggle_villain_cards)
+        right_layout.addWidget(self.chk_show_villain)
+
+        # 控制是否用 Big Blinds 视角（仿 RIROPO 的 "Show Stack Values in Big Blinds"）
+        self.chk_show_bb = QCheckBox("Show Stack Values in Big Blinds")
+        self.chk_show_bb.setChecked(False)
+        self.chk_show_bb.stateChanged.connect(self.on_toggle_big_blinds)
+        right_layout.addWidget(self.chk_show_bb)
+
+        self.txt_actions = QTextEdit()
+        self.txt_actions.setReadOnly(True)
+        right_layout.addWidget(self.txt_actions, 1)
+
+        splitter.addWidget(right_panel)
+        # 根据是否有左侧列表设定初始比例（放大 table 区域）
+        if self.show_hand_list:
+            # 左侧列表 + 中间牌桌 + 右侧动作
+            splitter.setSizes([200, 600, 250])
+        else:
+            # 只有中间牌桌和右侧动作（放大 table）
+            splitter.setSizes([900, 300])
+
+        # Bottom controls (navigation) - 只要三个按钮：prev action, play/pause, next action
+        nav_layout = QHBoxLayout()
+        nav_layout.setContentsMargins(0, 6, 0, 0)
+        nav_layout.setSpacing(8)
+
+        nav_layout.addStretch()
+
+        self.btn_prev_action = QPushButton("◀ Prev")
+        self.btn_play = QPushButton("▶ Play")
+        self.btn_next_action = QPushButton("Next ▶")
+
+        # 设置按钮样式和大小
+        button_style = """
+            QPushButton {
+                background-color: #2b2b2b;
+                color: white;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 6px 16px;
+                font-size: 13px;
+                min-width: 80px;
+            }
+            QPushButton:hover {
+                background-color: #3b3b3b;
+                border-color: #777;
+            }
+            QPushButton:pressed {
+                background-color: #1b1b1b;
+            }
+            QPushButton:disabled {
+                background-color: #1b1b1b;
+                color: #666;
+                border-color: #333;
+            }
+        """
+        self.btn_prev_action.setStyleSheet(button_style)
+        self.btn_play.setStyleSheet(button_style)
+        self.btn_next_action.setStyleSheet(button_style)
+        
+        self.btn_prev_action.setToolTip("Previous Action")
+        self.btn_play.setToolTip("Play / Pause")
+        self.btn_next_action.setToolTip("Next Action")
+
+        self.btn_prev_action.clicked.connect(self.prev_action)
+        self.btn_play.clicked.connect(self.toggle_play)
+        self.btn_next_action.clicked.connect(self.next_action)
+
+        nav_layout.addWidget(self.btn_prev_action)
+        nav_layout.addWidget(self.btn_play)
+        nav_layout.addWidget(self.btn_next_action)
+
+        nav_layout.addStretch()
+
+        main_layout.addLayout(nav_layout)
+
+        self.refresh_hand_list()
+
+    # _setup_nav_button 方法已移除，现在使用简单的文本按钮
+
+    # --- Public API ---
+    def load_hand(self, hand_id):
+        """Called from MainWindow when user double-clicks in CashGamePage."""
+        self.current_hand_id = hand_id
+
+        # 优先从数据库的稳定 JSON 结构恢复 replay（避免版本变更导致旧 hand 不可回放）
+        self.current_hand = None
+        payload = None
+        if hasattr(self.db, "get_replay_payload"):
+            payload = self.db.get_replay_payload(hand_id)
+
+        if payload:
+            # 轻量级对象，形状与 PokerHand 的回放字段兼容
+            class ReplayHand:
+                pass
+
+            h = ReplayHand()
+            h.hand_id = payload.get("hand_id")
+            h.date_time = payload.get("date_time")
+            h.game_type = payload.get("game_type", "")
+            h.blinds = payload.get("blinds", "")
+            h.hero_name = payload.get("hero_name", "Hero")
+            h.hero_seat = payload.get("hero_seat", 0)
+            h.hero_hole_cards = payload.get("hero_hole_cards", "")
+            h.button_seat = payload.get("button_seat", 0)
+            h.total_pot = payload.get("total_pot", 0.0)
+            h.rake = payload.get("rake", 0.0)
+            h.jackpot = payload.get("jackpot", 0.0)
+            h.net_profit = payload.get("net_profit", 0.0)
+            h.went_to_showdown = bool(payload.get("went_to_showdown", 0))
+            h.board_cards = payload.get("board_cards", [])
+            h.actions = payload.get("actions", [])
+
+            # players_info: {seat: {name, chips_start, hole_cards}}
+            h.players_info = {}
+            for p in payload.get("players", []):
+                seat = p.get("seat")
+                if seat is None:
+                    continue
+                h.players_info[int(seat)] = {
+                    "name": p.get("name"),
+                    "chips_start": p.get("stack_start", 0.0),
+                    "hole_cards": p.get("hole_cards", ""),
+                }
+
+            self.current_hand = h
+        else:
+            # 回退到当前会话的内存缓存（只对新解析的 hand 生效）
+            self.current_hand = get_hand_by_id(hand_id)
+        self.current_action_index = -1
+        self.actions = []
+        self.txt_actions.clear()
+
+        if not self.current_hand:
+            self.lbl_main_info.setText(f"Hand {hand_id} not available for replay (not in current session).")
+            self.lbl_hero.setText("")
+            self.lbl_board.setText("")
+            self.lbl_pot.setText("")
+            self.table_widget.set_hand(None)
+            return
+
+        self.lbl_main_info.setText(
+            f"{self.current_hand.game_type} @ {self.current_hand.blinds}  |  {self.current_hand.date_time}"
+        )
+        self.lbl_hero.setText(f"Hero: {self.current_hand.hero_hole_cards}  (Profit: ${self.current_hand.net_profit:.2f})")
+
+        # Board（兼容 run-it-twice：actions 里会有 board 节点，分别带 board_run=1/2）
+        board1 = []
+        board2 = []
+        has_timeline_board = False
+        for a in getattr(self.current_hand, "actions", []) or []:
+            if not isinstance(a, dict):
+                continue
+            if a.get("action_type") != "board":
+                continue
+            has_timeline_board = True
+            run_idx = a.get("board_run") or 1
+            cards = a.get("board_cards") or []
+            if not isinstance(cards, list):
+                cards = []
+            if run_idx == 2:
+                board2 = list(cards)
+            else:
+                board1 = list(cards)
+
+        if has_timeline_board:
+            if board2:
+                self.lbl_board.setText(
+                    f"Board: 1st: {' '.join(board1) if board1 else '-'} | 2nd: {' '.join(board2) if board2 else '-'}"
+                )
+            else:
+                self.lbl_board.setText(f"Board: {' '.join(board1) if board1 else '-'}")
+        else:
+            full_board = []
+            for street in getattr(self.current_hand, "board_cards", []) or []:
+                if isinstance(street, dict):
+                    full_board.extend(street.get("cards", []) or [])
+            self.lbl_board.setText(f"Board: {' '.join(full_board)}" if full_board else "Board: -")
+
+        jackpot = getattr(self.current_hand, "jackpot", 0.0) or 0.0
+        pot_text = f"Total Pot: ${self.current_hand.total_pot:.2f} | Rake: ${self.current_hand.rake:.2f}"
+        if jackpot > 0:
+            pot_text += f" | Jackpot: ${jackpot:.2f}"
+        self.lbl_pot.setText(pot_text)
+
+        # Update table canvas
+        self.table_widget.set_hand(self.current_hand)
+
+        # Use recorded actions as timeline
+        # 先保留一份原始 actions（run-it-twice 的最终 board 需要用到全部 board 节点）
+        raw_actions = list(getattr(self.current_hand, "actions", []) or [])
+        self.actions = list(raw_actions)
+
+        # run-it-twice：预先计算两条 run 的“最终完整 board”（各 5 张），供桌面 all-in 后一次性亮牌使用
+        board1 = []
+        board2 = []
+        has_raw_timeline_board = False
+        for a in raw_actions:
+            if not isinstance(a, dict):
+                continue
+            if a.get("action_type") != "board":
+                continue
+            has_raw_timeline_board = True
+            run_idx = a.get("board_run") or 1
+            cards = a.get("board_cards") or []
+            if not isinstance(cards, list):
+                cards = []
+            if run_idx == 2:
+                board2 = list(cards)
+            else:
+                board1 = list(cards)
+        if has_raw_timeline_board:
+            setattr(self.current_hand, "run_it_twice", True)
+            setattr(self.current_hand, "rit_final_board_1", list(board1))
+            setattr(self.current_hand, "rit_final_board_2", list(board2))
+        # 兼容旧版 replay 数据：同一 street 不应出现多个 pot_complete
+        #（旧逻辑可能在每条 collected 前都插入一次 pot_complete，导致时间线错误）
+        seen_pot_complete_streets = set()
+        normalized = []
+        for a in self.actions:
+            if not isinstance(a, dict):
+                continue
+            if a.get("action_type") == "pot_complete":
+                street = a.get("street", "")
+                if street in seen_pot_complete_streets:
+                    continue
+                seen_pot_complete_streets.add(street)
+            normalized.append(a)
+        self.actions = normalized
+
+        # run-it-twice：board 节点很多，但我们现在是“Preflop 结束后直接亮出完整两条 board”
+        # 所以保留第一个 board 节点作为“亮牌触发点”，其余 board 节点直接折叠掉，避免 next 没画面变化
+        has_timeline_board = any(
+            isinstance(a, dict) and a.get("action_type") == "board" for a in (self.actions or [])
+        )
+        if has_timeline_board:
+            first_board_seen = False
+            collapsed = []
+            for a in self.actions:
+                if not isinstance(a, dict):
+                    continue
+                if a.get("action_type") == "board":
+                    if first_board_seen:
+                        continue
+                    first_board_seen = True
+                collapsed.append(a)
+            self.actions = collapsed
+        # 从能看到牌、大小盲都操作完之后的界面开始
+        # 找到 blinds 后的第一个非-blind action（发牌后的第一个 action）
+        start_index = -1
+        if self.actions:
+            # 找到最后一个 blind action
+            last_blind_index = -1
+            for i, act in enumerate(self.actions):
+                act_type = act.get("action_type", "")
+                if act_type in ["post_small_blind", "post_big_blind", "post_straddle_blind"]:
+                    last_blind_index = i
+            # 从最后一个 blind 后的第一个 action 开始（发牌后的第一个 action）
+            if last_blind_index >= 0 and last_blind_index < len(self.actions) - 1:
+                start_index = last_blind_index  # 显示到最后一个 blind，这样可以看到 blinds 的筹码和发牌后的状态
+            elif last_blind_index >= 0:
+                # 如果 blinds 是最后一个 action，就从那里开始
+                start_index = last_blind_index
+        self.current_action_index = start_index
+        # 同步给牌桌组件
+        self.table_widget.set_timeline(self.actions, self.current_action_index)
+        self.append_actions_text(reset=True)
+
+        # Also highlight in list widget if present
+        if self.show_hand_list:
+            for i in range(self.list_hands.count()):
+                item = self.list_hands.item(i)
+                if item.data(Qt.UserRole) == hand_id:
+                    self.list_hands.setCurrentRow(i)
+                    break
+
+        # 根据当前手牌是否摊牌，决定 toggle 默认是否可用（先保持勾选状态不变）
+        # 这里只是触发一次刷新，具体逻辑在 ReplayTableWidget 内判断
+        self.table_widget.set_show_villain_cards(self.chk_show_villain.isChecked())
+        self.table_widget.set_show_big_blinds(self.chk_show_bb.isChecked())
+
+    # --- Navigation handlers ---
+    def prev_hand(self):
+        if not self.show_hand_list:
+            return
+        current_row = self.list_hands.currentRow()
+        if current_row > 0:
+            self.list_hands.setCurrentRow(current_row - 1)
+            item = self.list_hands.currentItem()
+            if item:
+                hand_id = item.data(Qt.UserRole)
+                self.load_hand(hand_id)
+
+    def next_hand(self):
+        if not self.show_hand_list:
+            return
+        current_row = self.list_hands.currentRow()
+        if current_row < self.list_hands.count() - 1:
+            self.list_hands.setCurrentRow(current_row + 1)
+            item = self.list_hands.currentItem()
+            if item:
+                hand_id = item.data(Qt.UserRole)
+                self.load_hand(hand_id)
+
+    def prev_action(self):
+        if not self.actions:
+            return
+        # 不让某些“计算用事件”占一画（例如 uncalled_bet_returned）
+        skip_types = {"uncalled_bet_returned"}
+        idx = max(-1, self.current_action_index - 1)
+        while idx >= 0 and isinstance(self.actions[idx], dict) and self.actions[idx].get("action_type") in skip_types:
+            idx -= 1
+        self.current_action_index = idx
+        # 如果停止播放，更新按钮文本
+        if self.replay_timer.isActive():
+            self.replay_timer.stop()
+            self.btn_play.setText("▶ Play")
+        # 更新牌桌与动作文本
+        self.table_widget.set_timeline(self.actions, self.current_action_index)
+        self.append_actions_text(reset=True)
+
+    def next_action(self):
+        if not self.actions:
+            return
+        # 不让某些“计算用事件”占一画（例如 uncalled_bet_returned）
+        skip_types = {"uncalled_bet_returned"}
+        if self.current_action_index < len(self.actions) - 1:
+            idx = self.current_action_index + 1
+            while idx < len(self.actions) and isinstance(self.actions[idx], dict) and self.actions[idx].get("action_type") in skip_types:
+                idx += 1
+            self.current_action_index = min(idx, len(self.actions) - 1)
+            # 更新牌桌与动作文本
+            self.table_widget.set_timeline(self.actions, self.current_action_index)
+            self.append_actions_text(reset=True)
+        else:
+            # reached the end, stop autoplay
+            if self.replay_timer.isActive():
+                self.replay_timer.stop()
+                self.btn_play.setText("▶ Play")
+
+    def toggle_play(self):
+        if not self.actions:
+            return
+        if self.replay_timer.isActive():
+            self.replay_timer.stop()
+            self.btn_play.setText("▶ Play")
+        else:
+            self.replay_timer.start()
+            self.btn_play.setText("⏸ Pause")
+
+    # --- Helpers ---
+    def refresh_hand_list(self):
+        """Load simple hand list from DB into the left panel."""
+        if not self.show_hand_list:
+            return
+        self.list_hands.clear()
+        hands = self.db.get_all_hands()
+        # newest first
+        hands.sort(key=lambda x: x[1] if x[1] else "", reverse=True)
+        for row in hands:
+            hand_id = row[0]
+            date = row[1] or ""
+            blinds = row[2] or ""
+            game = row[3] or ""
+            cards = row[4] or ""
+            profit = row[5] or 0.0
+            text = f"{date} | {game} {blinds} | {cards} | ${profit:.2f}"
+            item = QListWidgetItem(text)
+            item.setData(Qt.UserRole, hand_id)
+            self.list_hands.addItem(item)
+
+    def append_actions_text(self, reset=False):
+        """
+        Render actions up to current_action_index in the right-side text area.
+        从最开始显示，初始状态（index=-1）不显示任何 action。
+        """
+        if reset:
+            self.txt_actions.clear()
+        
+        if not self.actions:
+            return
+
+        # max_index = -1 表示初始状态，不显示任何 action
+        max_index = self.current_action_index
+        
+        # 初始状态：不显示任何 action
+        if max_index < 0:
+            self.txt_actions.append("Ready to start replay...")
+            self.txt_actions.moveCursor(QTextCursor.Start)
+            return
+        
+        # 显示到 current_action_index 为止的所有 actions（从最开始）
+        for i, act in enumerate(self.actions):
+            # 只显示到当前 index 为止
+            if i > max_index:
+                break
+                
+            street = act.get("street", "")
+            player = act.get("player", "")
+            action_type = act.get("action_type", "")
+            amount = act.get("amount")
+            to_amount = act.get("to_amount")
+            pot_size = act.get("pot_size")
+
+            parts = []
+            if street:
+                parts.append(f"[{street}]")
+            if player:
+                parts.append(player + ":")
+            if action_type:
+                parts.append(action_type)
+            if amount is not None and amount != 0:
+                parts.append(f"${amount:.2f}")
+            if to_amount is not None:
+                parts.append(f"to ${to_amount:.2f}")
+            if pot_size is not None:
+                parts.append(f"(pot: ${pot_size:.2f})")
+
+            line = " ".join(parts)
+            if line:
+                if i == max_index:
+                    self.txt_actions.append(f"> {line}")
+                else:
+                    self.txt_actions.append(f"  {line}")
+
+        # 滚动到当前 action
+        cursor = self.txt_actions.textCursor()
+        cursor.movePosition(QTextCursor.Start)
+        # 移动到第 max_index + 1 行（因为第一行是 index 0）
+        for _ in range(max_index + 1):
+            if not cursor.movePosition(QTextCursor.Down):
+                break
+        self.txt_actions.setTextCursor(cursor)
+
+    def on_hand_item_double_clicked(self, item):
+        if not self.show_hand_list:
+            return
+        hand_id = item.data(Qt.UserRole)
+        if hand_id:
+            self.load_hand(hand_id)
+
+    def on_toggle_villain_cards(self, state):
+        # 仅在摊牌局中起效，内部会再做一次校验
+        self.table_widget.set_show_villain_cards(bool(state))
+
+    def on_toggle_big_blinds(self, state):
+        # 切换 $ 和 BB 视角
+        self.table_widget.set_show_big_blinds(bool(state))

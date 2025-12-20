@@ -1,6 +1,11 @@
 import re
 import datetime
 
+# In-memory cache for full hand objects, used by Hand Replay.
+# Key: hand_id (str), Value: PokerHand instance
+HAND_CACHE = {}
+
+
 class PokerHand:
     def __init__(self):
         self.hand_id = ""
@@ -33,6 +38,12 @@ class PokerHand:
         # EV calculation data
         self.board_at_allin = []  # Board cards when all-in happened (for EV calculation)
         
+        # Replay data
+        self.button_seat = 0  # Button seat number
+        self.players_info = {}  # {seat_num: {name, chips_start, hole_cards}}
+        self.actions = []  # List of actions: [{street, player, action_type, amount, to_amount, is_all_in, pot_size}]
+        self.board_cards = []  # Board cards by street: [{street, cards: []}]
+        
     def __str__(self):
         return f"Hand: {self.hand_id} | Date: {self.date_time} | Profit: {self.net_profit:.2f} | Pot: {self.total_pot} | Rake: {self.rake}"
 
@@ -43,10 +54,13 @@ def parse_file(filepath):
     with open(filepath, 'r', encoding='utf-8') as f:
         for line in f:
             if line.strip() == "":
+                # 空行作为一手牌的分隔符：只有在 current_lines 非空时才解析/append
                 if current_lines:
                     hand = parse_hand(current_lines)
                     if hand:
                         hands.append(hand)
+                        # Cache for replay
+                        HAND_CACHE[hand.hand_id] = hand
                     current_lines = []
             else:
                 current_lines.append(line.strip())
@@ -55,8 +69,17 @@ def parse_file(filepath):
         hand = parse_hand(current_lines)
         if hand:
             hands.append(hand)
+            HAND_CACHE[hand.hand_id] = hand
             
     return hands
+
+
+def get_hand_by_id(hand_id):
+    """
+    Return a cached PokerHand instance by hand_id.
+    Note: only hands parsed in the current session are available.
+    """
+    return HAND_CACHE.get(hand_id)
 
 def parse_hand(lines):
     hand = PokerHand()
@@ -69,6 +92,17 @@ def parse_hand(lines):
     # Track current board for EV calculation (not stored in hand)
     current_board = []
     
+    # Replay tracking
+    current_pot = 0.0  # Track pot size (only includes chips that have entered the pot)
+    players_chips = {}  # Track current chips for each player {name: chips}
+    street_amount = {}  # Track amount on current street for each player {name: amount}
+    # 在一手牌的结算阶段（showdown / collected）只允许插入一次 pot_complete
+    # 否则会出现 pot_complete -> collected -> pot_complete -> collected 的错误时间线
+    conclusion_pot_completed = False
+    # Run it twice / multiple runouts
+    current_showdown_run = None  # 1/2，当处于 FIRST/SECOND SHOWDOWN 期间
+    run_boards = {1: [], 2: []}  # 每次 run 的公共牌累计
+    
     # Regex patterns
     re_hand_info = re.compile(r"Poker Hand #([^:]+): (.*?) \((.*?)\) - (.*)")
     re_table_info = re.compile(r"Table '(.*?)' 6-max Seat #(\d+) is the button")
@@ -76,6 +110,8 @@ def parse_hand(lines):
     re_post = re.compile(r"(.*?): posts (small|big|straddle) blind \$(\d+(\.\d+)?)")
     re_dealt = re.compile(r"Dealt to (.*) \[(.*)\]")
     re_street = re.compile(r"\*\*\* (FLOP|TURN|RIVER) \*\*\* (\[.*?\])(?: (\[.*?\]))?")
+    # GG 的 run-it-twice 格式：*** FIRST FLOP *** / *** SECOND TURN *** 等
+    re_run_street = re.compile(r"\*\*\* (FIRST|SECOND) (FLOP|TURN|RIVER) \*\*\* (\[.*?\])(?: (\[.*?\]))?")
     re_action_bet_call = re.compile(r"(.*?): (bets|calls|checks|folds) ?\$?(\d+(\.\d+)?)?")
     re_action_raise = re.compile(r"(.*?): raises \$(\d+(\.\d+)?) to \$(\d+(\.\d+)?)")
     re_uncalled = re.compile(r"Uncalled bet \(\$(\d+(\.\d+)?)\) returned to (.*)")
@@ -83,6 +119,7 @@ def parse_hand(lines):
     re_summary_pot = re.compile(r"Total pot \$(\d+(\.\d+)?) \| Rake \$(\d+(\.\d+)?)")
     re_summary_jackpot = re.compile(r"Jackpot \$(\d+(\.\d+)?)")
     re_showdown = re.compile(r"\*\*\* SHOW DOWN \*\*\*")
+    re_run_showdown = re.compile(r"\*\*\* (FIRST|SECOND) SHOWDOWN \*\*\*")
     re_shows = re.compile(r"(.*?): shows \[(.*?)\]")
     re_insurance = re.compile(r"(.*?): Pays All-in Insurance premium \(\$(\d+(\.\d+)?)\)")
     re_allin = re.compile(r"(.*?) and is all-in")
@@ -101,15 +138,32 @@ def parse_hand(lines):
                 pass
             continue
             
-        # Table Info (Button) - Skip
+        # Table Info (Button)
         m = re_table_info.match(line)
         if m:
+            hand.button_seat = int(m.group(2))
             continue
 
         # Street change
         m = re_street.match(line)
         if m:
             street_name = m.group(1).title() # Flop, Turn, River
+
+            # 街道切换：上一条街结束 -> 桌面筹码推入中间底池（pot_complete）
+            # 这样在进入下一条街（尤其是 all-in 后发牌）时，中间 pot 会显示完整筹码堆
+            if street_amount:
+                hand.actions.append(
+                    {
+                        "street": current_street,
+                        "player": None,
+                        "action_type": "pot_complete",
+                        "amount": 0.0,
+                        "to_amount": None,
+                        "is_all_in": False,
+                        "pot_size": float(current_pot),
+                    }
+                )
+                street_amount = {}
             
             # GGPoker format:
             # FLOP: *** FLOP *** [Ah Kd Qc] - 3 new cards
@@ -126,10 +180,72 @@ def parse_hand(lines):
                     cards = ""
             
             if cards:
-                current_board.extend(cards.split())
+                new_cards = cards.split()
+                current_board.extend(new_cards)
+                # Store board cards for this street
+                hand.board_cards.append({
+                    'street': street_name,
+                    'cards': new_cards
+                })
             
-            current_street = street_name
+            # 新街开始：重置当前街的投注
+            # 仿 RIROPO：新街开始时，amountOnStreet 被重置，但 pot 保持不变（因为之前已经加过了）
+            # 注意：current_pot 已经包含了上一街的所有筹码（因为在每个 action 时都 current_pot += amount）
+            # 所以这里只需要重置 street_amount，不需要再加到 pot 中
+            street_amount = {}  # Reset for new street
             street_committed = {} # Reset for new street
+            current_street = street_name
+            continue
+
+        # Run-it-twice street change (FIRST/SECOND FLOP/TURN/RIVER)
+        m = re_run_street.match(line)
+        if m:
+            run_tag = m.group(1).upper()  # FIRST/SECOND
+            run_idx = 1 if run_tag == "FIRST" else 2
+            street_name = m.group(2).title()  # Flop/Turn/River
+            hand.went_to_showdown = True
+            hand.run_it_twice = True
+
+            # run-it-twice 开始发牌前：把上一条街（通常是 Preflop all-in）的桌面筹码推入中间底池
+            if street_amount:
+                hand.actions.append(
+                    {
+                        "street": current_street,
+                        "player": None,
+                        "action_type": "pot_complete",
+                        "amount": 0.0,
+                        "to_amount": None,
+                        "is_all_in": False,
+                        "pot_size": float(current_pot),
+                    }
+                )
+                street_amount = {}
+
+            # 解析牌面：FLOP 用第一个括号的 3 张，TURN/RIVER 用第二个括号的新牌
+            if street_name == "Flop":
+                cards = m.group(3).replace("[", "").replace("]", "")
+                new_cards = cards.split() if cards else []
+                run_boards[run_idx] = list(new_cards)
+            else:
+                new_part = m.group(4) or ""
+                new_part = new_part.replace("[", "").replace("]", "")
+                new_cards = new_part.split() if new_part else []
+                run_boards[run_idx].extend(new_cards)
+
+            # 作为回放时间线节点写入 actions，让 UI 可以按 index 推导两条 board
+            hand.actions.append(
+                {
+                    "street": street_name,
+                    "player": None,
+                    "action_type": "board",
+                    "amount": 0.0,
+                    "to_amount": None,
+                    "is_all_in": False,
+                    "pot_size": max(0.0, float(current_pot - sum(street_amount.values()))),
+                    "board_run": run_idx,
+                    "board_cards": list(run_boards[run_idx]),
+                }
+            )
             continue
             
         # Seats
@@ -141,13 +257,30 @@ def parse_hand(lines):
             
             if player_name == hand.hero_name:
                 hand.hero_seat = seat_num
+            
+            # Store player info for replay
+            hand.players_info[seat_num] = {
+                'name': player_name,
+                'chips_start': chips,
+                'hole_cards': None  # Will be filled when dealt
+            }
+            players_chips[player_name] = chips
             continue
             
         # Hole Cards
         m = re_dealt.match(line)
         if m:
-            if m.group(1) == hand.hero_name:
-                hand.hero_hole_cards = m.group(2)
+            player_name = m.group(1)
+            cards = m.group(2)
+            
+            if player_name == hand.hero_name:
+                hand.hero_hole_cards = cards
+            
+            # Store hole cards for replay (find player by name)
+            for seat_num, player_info in hand.players_info.items():
+                if player_info['name'] == player_name:
+                    player_info['hole_cards'] = cards
+                    break
             continue
             
         # Actions - Post Blinds
@@ -161,6 +294,28 @@ def parse_hand(lines):
                 hand.hero_wagered += amount
                 # Blinds count as preflop commit
                 street_committed[player] = street_committed.get(player, 0.0) + amount
+            
+            # Update chips and pot for replay
+            # 仿 RIROPO：blinds 下注时，pot 增加，但筹码放在 amountOnStreet 中（还在玩家面前）
+            # 显示的 pot = pot - sum(amountOnStreet)，所以在 blinds 阶段显示的 pot = 0
+            if player in players_chips:
+                players_chips[player] -= amount
+            street_amount[player] = street_amount.get(player, 0.0) + amount
+            current_pot += amount  # pot 增加
+            
+            # Record action for replay
+            # pot_size = current_pot - sum(street_amount) = 已经进入 pot 的筹码（不包括当前街还在玩家面前的筹码）
+            # 对于 blinds，显示的 pot = pot - (small_blind + big_blind) = (small_blind + big_blind) - (small_blind + big_blind) = 0
+            pot_size = max(0.0, current_pot - sum(street_amount.values()))  # 确保不会是负数
+            hand.actions.append({
+                'street': current_street,
+                'player': player,
+                'action_type': f'post_{action_type}_blind',
+                'amount': amount,
+                'to_amount': None,
+                'is_all_in': False,
+                'pot_size': pot_size
+            })
             continue
             
         # Actions - Bet/Call/Check/Fold
@@ -169,14 +324,23 @@ def parse_hand(lines):
             player = m.group(1)
             action = m.group(2)
             amount = float(m.group(3)) if m.group(3) else 0.0
+            is_all_in = "and is all-in" in line
             
             if action in ['bets', 'calls']:
                 if player == hand.hero_name:
                     hand.hero_wagered += amount
                     street_committed[player] = street_committed.get(player, 0.0) + amount
                 
+                # Update chips and pot for replay
+                # 仿 RIROPO：pot 增加，但筹码放在 amountOnStreet 中（还在玩家面前）
+                # 显示的 pot = pot - sum(amountOnStreet)，所以显示的 pot 不包括当前街还在玩家面前的筹码
+                if player in players_chips:
+                    players_chips[player] -= amount
+                street_amount[player] = street_amount.get(player, 0.0) + amount
+                current_pot += amount  # pot 增加
+                
                 # Check for all-in in bet/call
-                if "and is all-in" in line:
+                if is_all_in:
                     if player == hand.hero_name:
                         if not hand.is_all_in:  # Only set once
                             hand.is_all_in = True
@@ -194,6 +358,19 @@ def parse_hand(lines):
                         hand.is_all_in = True
                         hand.all_in_street = hand._allin_street
                         hand.board_at_allin = list(hand._allin_board) if hasattr(hand, '_allin_board') else list(current_board)
+            
+            # Record action for replay
+            # pot_size = current_pot - sum(street_amount) = 已经进入 pot 的筹码（不包括当前街还在玩家面前的筹码）
+            pot_size = max(0.0, current_pot - sum(street_amount.values()))  # 确保不会是负数
+            hand.actions.append({
+                'street': current_street,
+                'player': player,
+                'action_type': action,
+                'amount': amount,
+                'to_amount': None,
+                'is_all_in': is_all_in,
+                'pot_size': pot_size
+            })
             continue
             
         # Actions - Raise
@@ -202,6 +379,7 @@ def parse_hand(lines):
             player = m.group(1)
             raise_amount = float(m.group(2))
             raise_to = float(m.group(4))
+            is_all_in = "and is all-in" in line
             
             if player == hand.hero_name:
                 prev_commit = street_committed.get(player, 0.0)
@@ -210,8 +388,17 @@ def parse_hand(lines):
                     hand.hero_wagered += increment
                     street_committed[player] = raise_to
             
+            # Update chips and pot for replay
+            # 仿 RIROPO：对于 raises，amount 是 raise_to（总金额），diff = raise_to - prev_amountOnStreet
+            prev_amount_on_street = street_amount.get(player, 0.0)
+            diff = raise_to - prev_amount_on_street  # 增量 = 总金额 - 之前投入
+            if player in players_chips:
+                players_chips[player] -= diff
+            street_amount[player] = raise_to  # raises 时，amountOnStreet = raise_to（总金额）
+            current_pot += diff  # pot 只加增量
+            
             # Check for all-in in this raise
-            if "and is all-in" in line:
+            if is_all_in:
                 if player == hand.hero_name:
                     if not hand.is_all_in:  # Only set once
                         hand.is_all_in = True
@@ -222,6 +409,19 @@ def parse_hand(lines):
                         hand._someone_allin = True
                         hand._allin_street = current_street
                         hand._allin_board = list(current_board)
+            
+            # Record action for replay
+            # pot_size = current_pot - sum(street_amount) = 已经进入 pot 的筹码（不包括当前街还在玩家面前的筹码）
+            pot_size = max(0.0, current_pot - sum(street_amount.values()))  # 确保不会是负数
+            hand.actions.append({
+                'street': current_street,
+                'player': player,
+                'action_type': 'raises',
+                'amount': raise_amount,
+                'to_amount': raise_to,
+                'is_all_in': is_all_in,
+                'pot_size': pot_size
+            })
             continue
             
         # Uncalled Bet Returned
@@ -231,6 +431,28 @@ def parse_hand(lines):
             player = m.group(3)
             if player == hand.hero_name:
                 hand.hero_wagered -= amount
+            
+            # Update chips and pot for replay
+            # 仿 RIROPO：uncalled bet 从 street_amount 和 pot 中减去
+            if player in players_chips:
+                players_chips[player] += amount
+            # 从 street_amount 中减去（如果存在）
+            if player in street_amount:
+                street_amount[player] = max(0.0, street_amount[player] - amount)
+            current_pot -= amount  # pot 也减少
+            
+            # Record action for replay
+            # pot_size = current_pot - sum(street_amount) = 已经进入 pot 的筹码
+            pot_size = current_pot - sum(street_amount.values())
+            hand.actions.append({
+                'street': current_street,
+                'player': player,
+                'action_type': 'uncalled_bet_returned',
+                'amount': amount,
+                'to_amount': None,
+                'is_all_in': False,
+                'pot_size': pot_size
+            })
             continue
             
         # Collected
@@ -240,6 +462,42 @@ def parse_hand(lines):
             amount = float(m.group(2))
             if player == hand.hero_name:
                 hand.hero_collected += amount
+            
+            # Update chips for replay
+            if player in players_chips:
+                players_chips[player] += amount
+            
+            # 在 collected 之前插入一次 pot_complete（仅当尚未插入且桌面仍有本街筹码）
+            # - showdown 手：会在 *** SHOW DOWN *** 时插入（并置 conclusion_pot_completed=True），这里不再重复
+            # - 非 showdown 手（比如对手 fold）：在第一次 collected 前插入一次
+            if (not conclusion_pot_completed) and street_amount:
+                street_amount = {}  # 清空 street_amount，所有筹码进入 pot
+                conclusion_pot_completed = True
+                hand.actions.append({
+                    'street': current_street,
+                    'player': None,
+                    'action_type': 'pot_complete',
+                    'amount': 0.0,
+                    'to_amount': None,
+                    'is_all_in': False,
+                    'pot_size': float(current_pot),
+                })
+            
+            # Record action for replay
+            # collected 时，所有筹码都已经进入 pot，所以 pot_size = current_pot（完整的 pot）
+            # 此时 street_amount 应该已经被清空（因为已经到 conclusion 阶段或上面已经处理）
+            pot_size = float(current_pot)  # street_amount 已经为空，所以直接使用 current_pot
+            hand.actions.append({
+                'street': current_street,
+                'player': player,
+                'action_type': 'collected',
+                'amount': amount,
+                'to_amount': None,
+                'is_all_in': False,
+                'pot_size': pot_size,
+                # run-it-twice：collected 可能出现两次（FIRST/SECOND），标记来源 run
+                'run': current_showdown_run,
+            })
             continue
         
         # Insurance Premium
@@ -256,6 +514,51 @@ def parse_hand(lines):
         if m:
             hand.went_to_showdown = True
             current_street = 'Showdown'
+            current_showdown_run = None
+            
+            # 在 showdown 之前，所有筹码都应该进入 pot
+            # 添加一个中间节点，显示所有筹码都进入 pot 了
+            # 这样在 collected 之前会有一个清晰的"筹码进入 pot"的状态
+            # 注意：current_pot 已经包含了所有筹码（因为在每个 action 时都 current_pot += amount）
+            # 显示的 pot = current_pot - sum(street_amount)，完整的 pot = current_pot
+            # 所以完整的 pot = 显示的 pot + sum(street_amount)
+            if not conclusion_pot_completed:
+                street_amount = {}  # 清空 street_amount，所有筹码进入 pot
+                conclusion_pot_completed = True
+                hand.actions.append({
+                    'street': current_street,
+                    'player': None,
+                    'action_type': 'pot_complete',
+                    'amount': 0.0,
+                    'to_amount': None,
+                    'is_all_in': False,
+                    'pot_size': float(current_pot),
+                })
+            continue
+
+        # Run-it-twice showdown detection (FIRST/SECOND SHOWDOWN)
+        m = re_run_showdown.match(line)
+        if m:
+            hand.went_to_showdown = True
+            hand.run_it_twice = True
+            current_street = 'Showdown'
+            current_showdown_run = 1 if m.group(1).upper() == "FIRST" else 2
+
+            # 第一次进入 showdown 时插入 pot_complete；第二次不再重复
+            if not conclusion_pot_completed:
+                street_amount = {}
+                conclusion_pot_completed = True
+                hand.actions.append(
+                    {
+                        "street": "Showdown",
+                        "player": None,
+                        "action_type": "pot_complete",
+                        "amount": 0.0,
+                        "to_amount": None,
+                        "is_all_in": False,
+                        "pot_size": float(current_pot),
+                    }
+                )
             continue
             
         # Player shows cards (also indicates showdown)
@@ -265,6 +568,16 @@ def parse_hand(lines):
             cards = m.group(2)
             hand.went_to_showdown = True
             hand.showdown_players[player] = cards
+
+            # 将 showdown 看到的底牌写回 players_info，供回放 UI 全程使用（比如“Show Villain Cards”）
+            # players_info: {seat_num: {name, chips_start, hole_cards}}
+            try:
+                for _seat, _info in getattr(hand, "players_info", {}).items():
+                    if _info.get("name") == player:
+                        _info["hole_cards"] = cards
+                        break
+            except Exception:
+                pass
             
             # Track villain cards for EV calculation
             if player != hand.hero_name and not hand.villain_cards:

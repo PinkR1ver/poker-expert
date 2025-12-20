@@ -245,3 +245,7 @@ if __name__ == "__main__":
         rank = evaluate_five(hand)
         print(f"  {hand} -> {rank}")
 
+
+
+
+
