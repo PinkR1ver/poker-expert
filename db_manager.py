@@ -41,7 +41,7 @@ class DBManager:
             )
             """
         )
-
+        
         # Migrate old database: add insurance_premium column if it doesn't exist
         cursor.execute("PRAGMA table_info(hands)")
         columns = [col[1] for col in cursor.fetchall()]
@@ -57,9 +57,9 @@ class DBManager:
                 "ALTER TABLE hands ADD COLUMN jackpot REAL DEFAULT 0"
             )
             self.conn.commit()
-
+        
         # 旧版曾经有 raw_data 列（已废弃），这里保持兼容，不再使用
-
+        
         self.conn.commit()
 
     # --- Hand replay JSON -------------------------------------------------
@@ -206,28 +206,28 @@ class DBManager:
                 INSERT INTO hands (
                     hand_id, date_time, blinds, game_type, hero_hole_cards,
                     profit, rake, total_pot, insurance_premium, jackpot,
-                    showdown_winnings, non_showdown_winnings,
+                                   showdown_winnings, non_showdown_winnings, 
                     went_to_showdown, is_all_in, all_in_ev
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    hand.hand_id,
+                hand.hand_id,
                     hand.date_time.strftime("%Y-%m-%d %H:%M:%S")
                     if hand.date_time
                     else None,
-                    hand.blinds,
-                    hand.game_type,
-                    hand.hero_hole_cards,
-                    hand.net_profit,
-                    hand.rake,
-                    hand.total_pot,
-                    hand.insurance_premium,
+                hand.blinds,
+                hand.game_type,
+                hand.hero_hole_cards,
+                hand.net_profit,
+                hand.rake,
+                hand.total_pot,
+                hand.insurance_premium,
                     hand.jackpot,
-                    hand.showdown_winnings,
-                    hand.non_showdown_winnings,
-                    1 if hand.went_to_showdown else 0,
-                    1 if hand.is_all_in else 0,
+                hand.showdown_winnings,
+                hand.non_showdown_winnings,
+                1 if hand.went_to_showdown else 0,
+                1 if hand.is_all_in else 0,
                     hand.all_in_ev,
                 ),
             )

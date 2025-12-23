@@ -10,12 +10,12 @@ alwaysApply: false
 采用 **MVC-like 架构**，分为数据层、业务逻辑层和表现层：
 
 ```
-┌─────────────────────────────────────────┐
-│         Presentation Layer (GUI)        │
-│  ┌──────────┐  ┌──────────┐  ┌────────┐ │
-│  │Dashboard │  │CashGame │  │ Import │ │
-│  └──────────┘  └──────────┘  └────────┘ │
-└─────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────┐
+│                 Presentation Layer (GUI)                       │
+│  ┌──────────┐ ┌──────────┐ ┌────────┐ ┌────────┐ ┌──────────┐ │
+│  │Dashboard │ │CashGame │ │ Import │ │ Report │ │  Replay  │ │
+│  └──────────┘ └──────────┘ └────────┘ └────────┘ └──────────┘ │
+└────────────────────────────────────────────────────────────────┘
               ↓
 ┌─────────────────────────────────────────┐
 │        Business Logic Layer             │
@@ -115,34 +115,92 @@ CREATE TABLE hands (
 **布局**: 侧边栏导航 + 内容区域（StackedWidget）
 
 **组件**:
-- `QListWidget`: 侧边栏（Dashboard, Cash Games, Import）
+- `QListWidget`: 侧边栏（Dashboard, Cash Game Graph, Cash Games, Report, Import）
 - `QStackedWidget`: 内容区域，切换不同页面
+- `ReplayWindow`: 独立的手牌回放弹窗
 
-#### 4.2 页面组件 (`gui/pages.py`)
+#### 4.2 页面模块 (`gui/pages/`)
 
-**DashboardPage**:
-- **布局**: 左侧筛选面板（220px）+ 右侧图表区域
+页面模块已拆分为独立文件，降低耦合度：
+
+```
+gui/pages/
+├── __init__.py              # 导出所有页面类
+├── dashboard.py             # DashboardPage
+├── cash_game.py             # CashGamePage, CashGameGraphPage
+├── import_page.py           # ImportPage, ImportWorker
+├── replay.py                # ReplayPage
+└── reports/                 # 报告模块
+    ├── __init__.py
+    ├── report_page.py       # ReportPage（报告选择器）
+    └── position_analysis.py # PositionTableWidget, PositionAnalysisReport
+```
+
+**DashboardPage** (`gui/pages/dashboard.py`):
+- **布局**: 左侧筛选面板（220px）+ 右侧图表区域 + 报告链接
 - **筛选控件**:
   - 日期范围下拉框（All Time, This Year, This Month, This Week, Today）
   - X轴模式（By Hands / By Date）
   - 曲线显示复选框（Net Won, All-in EV, Showdown Won, Non-Showdown Won）
 - **图表**: Matplotlib 多曲线图
 - **Summary**: 底部统计（Hands, Net, Rake, Insurance）
+- **Reports 链接**: 快速跳转到报告页面
 
-**CashGamePage**:
-- **表格**: `QTableView` + `HandsTableModel`
-- **功能**: 
-  - 列排序（点击表头）
-  - 行选择
-  - 颜色编码（盈利绿色，亏损红色）
-- **列**: Date, Game, Stakes, Hand, Net Won, Pot, Rake
+**CashGamePage (Sessions)** (`gui/pages/cash_game.py`):
+- **布局**: 上方 Summary 统计 + 上下分栏（Sessions 列表 + 手牌详情）
+- **Summary**: 显示总计统计（Total: X hands, Net Won, VPIP, PFR, 3Bet, WTSD, W$SD, Agg）
+- **Sessions 列表**:
+  - 按时间分组（间隔 30 分钟算新 session）
+  - 统计指标：Hands, Net Won, VPIP, PFR, 3Bet, WTSD%, W$SD%, Postflop Agg%
+  - 点击 session 显示该 session 的手牌
+  - **支持列排序**（点击列头排序，再次点击切换升降序）
+- **手牌详情表格**:
+  - 列：Time, Stakes, Stack(bb), Cards, Line, Board, Net Won, bb, Pos, PF Line
+  - **Line**: Hero 各街行动线（包括 Preflop），格式：`RC,XB,XC` = Preflop Raise-Call, Flop Check-Bet, Turn Check-Call
+  - **PF Line**: Hero 翻前行动类型（Raiser, 3B, C, F）
+  - **支持列排序**（时间列按实际时间排序，正确处理 AM/PM）
+  - **双击行打开 Replay 弹窗**
+- **行动缩写**（Line 列）:
+  - B = Bet, R = Raise, C = Call, X = Check, F = Fold, A = All-in
+  - 只记录实际行动，排除盲注、底池操作等
 
-**ImportPage**:
+**CashGameGraphPage** (`gui/pages/cash_game.py`):
+- 独立的盈亏曲线图表页面
+- 与 DashboardPage 图表功能相同但全屏显示
+
+**ImportPage** (`gui/pages/import_page.py`):
 - **功能**: 文件/文件夹导入
 - **后台线程**: `ImportWorker` (QThread)
 - **反馈**: 进度条 + 状态标签（New Hands, Duplicates）
 
-#### 4.3 样式 (`gui/styles.py`)
+**ReportPage** (`gui/pages/reports/report_page.py`):
+- **布局**: 左侧报告选择器（树形结构）+ 右侧报告内容区域
+- **报告分类**: RESULTS, PREFLOP, ANALYSIS, DATE AND TIME
+- **已实现报告**: Position Analysis
+
+**PositionAnalysisReport** (`gui/pages/reports/position_analysis.py`):
+- **可视化**: 扑克桌样式（椭圆桌子 + 6个位置圆圈 + 中心统计框）
+- **数据**: bb/100、Winloss、Flop%、Showdown 统计
+- **切换按钮**: Total/bb/100、$/BB 切换
+- **表格**: 按位置汇总的统计数据
+
+**ReplayPage** (`gui/pages/replay.py`):
+- **功能**: 手牌回放
+- **组件**: 手牌列表 + 牌桌可视化 + 动作面板
+- **控制**: Prev/Play/Next 按钮
+
+#### 4.3 组件模块 (`gui/components/`)
+
+可复用的 GUI 组件：
+
+```
+gui/components/
+├── __init__.py
+├── stat_card.py             # StatCard - 统计卡片组件
+└── hands_table_model.py     # HandsTableModel - 手牌表格数据模型
+```
+
+#### 4.4 样式 (`gui/styles.py`)
 
 **主题**: 深色模式
 - 背景色: `#2b2b2b`

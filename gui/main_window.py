@@ -6,7 +6,7 @@ from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QIcon
 
 from db_manager import DBManager
-from gui.pages import DashboardPage, CashGamePage, ImportPage, ReplayPage
+from gui.pages import DashboardPage, CashGamePage, CashGameGraphPage, ImportPage, ReplayPage, ReportPage
 from gui.styles import DARK_THEME_QSS, SIDEBAR_COLOR
 
 
@@ -49,8 +49,8 @@ class MainWindow(QMainWindow):
         self.sidebar.setFixedWidth(220)
         self.sidebar.currentRowChanged.connect(self.switch_page)
         
-        # Add Items (Replay 不占侧边栏，只保留 Dashboard / Cash Games / Import)
-        items = ["Dashboard", "Cash Games", "Import"]
+        # Add Items (Replay 不占侧边栏，保留 Dashboard / Cash Game Graph / Sessions / Report / Import)
+        items = ["Dashboard", "Cash Game Graph", "Sessions", "Report", "Import"]
         # In a real app, you'd add icons here (QIcon)
         for item_text in items:
             item = QListWidgetItem(item_text)
@@ -66,17 +66,22 @@ class MainWindow(QMainWindow):
 
         # Initialize Pages
         self.page_dashboard = DashboardPage(self.db)
+        self.page_graph = CashGameGraphPage(self.db)
         self.page_cash = CashGamePage(self.db)
         self.page_replay = ReplayPage(self.db)  # 内部备用（目前主要给弹窗复用状态）
         self.page_import = ImportPage()
+        self.page_report = ReportPage(self.db)
 
         # Connect Signals
         self.page_import.data_changed.connect(self.on_data_changed)
         self.page_cash.hand_selected.connect(self.on_hand_selected)
+        self.page_dashboard.report_link_clicked.connect(self.on_report_link_clicked)
 
-        # Add to Stack（与 sidebar 对齐：0=Dashboard,1=Cash,2=Import）
+        # Add to Stack（与 sidebar 对齐：0=Dashboard,1=Graph,2=Cash,3=Report,4=Import）
         self.content_area.addWidget(self.page_dashboard)
+        self.content_area.addWidget(self.page_graph)
         self.content_area.addWidget(self.page_cash)
+        self.content_area.addWidget(self.page_report)
         self.content_area.addWidget(self.page_import)
 
         # Select first item
@@ -88,7 +93,16 @@ class MainWindow(QMainWindow):
     def on_data_changed(self):
         # Refresh all data pages
         self.page_dashboard.refresh_data()
+        self.page_graph.refresh_data()
         self.page_cash.refresh_data()
+        self.page_report.refresh_data()
+    
+    def on_report_link_clicked(self, report_id):
+        """当用户从 Dashboard 点击报告链接时，切换到 Report 页面并选中对应的报告。"""
+        # 切换到 Report 页面（index 3）
+        self.sidebar.setCurrentRow(3)
+        # 选中对应的报告
+        self.page_report.select_report(report_id)
 
     def on_hand_selected(self, hand_id):
         """
@@ -106,6 +120,7 @@ class MainWindow(QMainWindow):
         self.replay_window.show()
         self.replay_window.raise_()
         self.replay_window.activateWindow()
+
 
 
 

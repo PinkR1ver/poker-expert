@@ -64,12 +64,33 @@ alwaysApply: false
 - **Showdown Won**: 摊牌盈利，到摊牌的手牌盈亏
 - **Non-Showdown Won**: 非摊牌盈利，未到摊牌的手牌盈亏（对手弃牌赢/Hero弃牌输）
 
-### 统计指标（规划中）
+### 统计指标
 
-- **VPIP** (Voluntarily Put $ In Pot): 主动入池率
-- **PFR** (Pre-Flop Raise): 翻牌前加注率
-- **3Bet**: 三倍加注（对加注再加注）
+- **VPIP** (Voluntarily Put $ In Pot): 主动入池率，自愿投入底池的手数比例（除盲注外有 call/raise/bet 的手数 / 总手数）
+- **PFR** (Pre-Flop Raise): 翻牌前加注率，翻前有 raise 的手数 / 总手数
+- **3Bet**: 三倍加注率，面对 open raise 后 re-raise 的次数 / 面对 open raise 的次数
+- **WTSD%** (Went To ShowDown): 摊牌率，到摊牌的手数 / 看到 flop 的手数
+- **W$SD%** (Won $ at ShowDown): 摊牌胜率，摊牌赢钱的手数 / 到摊牌的手数
+- **Postflop Agg%** (Postflop Aggression): 翻后激进度，(bet + raise 次数) / (bet + raise + call + check 次数)
 - **AF** (Aggression Factor): 攻击性因子 = (Bet次数 + Raise次数) / Call次数
+
+### 行动线术语
+
+- **Line**: Hero 的行动线，记录各街（包括 Preflop）的行动缩写
+  - **B** = Bet (下注)
+  - **R** = Raise (加注)
+  - **C** = Call (跟注)
+  - **X** = Check (过牌)
+  - **F** = Fold (弃牌)
+  - **A** = All-in (全下)
+  - 格式：各街用逗号分隔
+  - 例如：`RC,XB,XC,XF` = Preflop Raise-Call, Flop Check-Bet, Turn Check-Call, River Check-Fold
+  - 注：只记录实际行动，排除盲注（post blind）、底池操作（collected, uncalled_bet_returned）等
+- **PF Line**: Hero 翻前行动类型（简化显示）
+  - **Raiser** = Open raise (开池加注)
+  - **3B** = 3-bet (对 open raise 再加注)
+  - **C** = Call (跟注)
+  - **F** = Fold (弃牌)
 
 ## 技术术语
 
@@ -106,10 +127,8 @@ alwaysApply: false
 
 - **Parser**: 解析器，`poker_parser.py` 中的解析逻辑
 - **DBManager**: 数据库管理器，`db_manager.py` 中的数据库操作类
-- **Replayer**: 手牌回放器，可视化重现手牌过程（规划中）
+- **Replayer**: 手牌回放器，可视化重现手牌过程（已实现）
 - **Dashboard**: 概览页面，显示核心统计和图表
-- **Cash Games**: 现金局页面，显示手牌列表
-
-
-
+- **Sessions**: 会话页面，按时间分组显示 session 统计和手牌详情
+- **Session**: 连续打牌的时间段，间隔超过 30 分钟算作不同 session
 
