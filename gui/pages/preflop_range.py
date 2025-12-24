@@ -201,11 +201,12 @@ class StrategyMatrixWidget(QWidget):
                 
                 hand_strategy = self.strategy_data.get(hand, {})
                 
-                if self.view_mode == "strategy" and len(self.action_order) > 1:
-                    # 策略模式：绘制多色条形
+                if self.view_mode == "strategy":
+                    # 策略模式：绘制 fold + actions 的堆叠条形
+                    # 即使只有一个 action 也能正确显示 fold 比例
                     self._draw_strategy_cell(painter, x, y, cell_w, cell_h, hand, hand_strategy)
                 else:
-                    # Range 模式：单色
+                    # Range 模式：单色（频率渐变）
                     total_freq = sum(hand_strategy.values())
                     self._draw_range_cell(painter, x, y, cell_w, cell_h, hand, total_freq)
         
@@ -714,19 +715,47 @@ class PreflopRangePage(QWidget):
         
         layout.addWidget(right_panel, 1)
         
-        self._update_position_buttons([], [])
+        # 初始化时显示各位置的 open strategy
+        self._init_default_view()
+    
+    def _init_default_view(self):
+        """初始化默认视图 - 显示各位置的 open strategy"""
+        ranges_path = os.path.join(self.range_base_path, "ranges")
+        if not os.path.exists(ranges_path):
+            self._update_position_buttons([], [])
+            return
+        
+        # 获取所有可 open 的位置
+        open_positions = []
+        for pos in os.listdir(ranges_path):
+            pos_path = os.path.join(ranges_path, pos)
+            if os.path.isdir(pos_path) and not pos.startswith('.') and pos in POSITIONS:
+                open_positions.append(pos)
+        
+        # 排序并显示
+        open_positions = sorted(open_positions, key=lambda p: POSITIONS.index(p) if p in POSITIONS else 99)
+        
+        # 没有已行动位置，只有待行动位置（opener）
+        self._update_position_buttons([], open_positions)
+        self.range_title.setText("Select a position to view open strategy")
     
     def _on_stack_changed(self, stack):
         self.current_stack = stack
         self.range_base_path = self._get_range_base_path()
         self.action_builder.set_base_path(self.range_base_path)
         self.range_matrix.clear()
-        self._update_position_buttons([], [])
         self._update_action_buttons([])
-        self.range_title.setText("Select an action sequence")
-        self.stats_label.setText("")
+        self._init_default_view()  # 切换深度后重新初始化视图
     
     def _on_sequence_changed(self, sequence):
+        # 如果序列为空，显示默认视图（所有位置的 open strategy）
+        if not sequence:
+            self._init_default_view()
+            self._update_action_buttons([])
+            self.current_position = None
+            self.current_position_type = None
+            return
+        
         current_path = self.action_builder._get_current_path()
         
         # 获取已行动位置（从行动序列中提取，去重但保持顺序）
@@ -751,11 +780,7 @@ class PreflopRangePage(QWidget):
         self.current_position = None
         self.current_position_type = None  # "acted" or "next"
         
-        if not acted_positions and not next_positions:
-            self.range_matrix.clear()
-            self.range_title.setText("Select an opener to start")
-            self.stats_label.setText("")
-        elif not next_positions and acted_positions:
+        if not next_positions and acted_positions:
             self.range_matrix.clear()
             self.range_title.setText("Select a position to view range")
             self.stats_label.setText("")
@@ -1011,8 +1036,10 @@ class PreflopRangePage(QWidget):
         
         优先查找策略：
         1. 当前目录直接的 {position}.txt
-        2. 优先查找 opener 位置的子目录（回到 opener 做决定）
-        3. 递归搜索其他子目录（按位置顺序）
+        2. 优先查找 "call" 分支（最简单的后续节点，代表原始 open range）
+        3. 然后按位置顺序递归搜索
+        
+        关键：要找的是该位置的 "原始 range"，不是后续决策后的 range
         """
         target_file = f"{position}.txt"
         
@@ -1021,24 +1048,26 @@ class PreflopRangePage(QWidget):
         if os.path.exists(direct_path):
             return direct_path
         
-        # 获取 opener 位置（优先搜索）
-        opener = None
-        if self.action_builder.action_sequence:
-            opener = self.action_builder.action_sequence[0][0]
-        
         try:
             items = os.listdir(base_path)
-            # 排序：opener 优先，然后按位置顺序，行动关键词在后
+            
+            # 排序策略：优先找最短路径到 position.txt
+            # 1. "call" 最优先（通常是最简单的后续，保留原始 range）
+            # 2. "fold" 次之
+            # 3. 按位置顺序，盲位优先（SB/BB 更可能直接 call）
             def sort_key(item):
-                if item == opener:
-                    return (0, 0)  # opener 最优先
-                if item in POSITIONS:
-                    return (1, POSITIONS.index(item))
-                # call 和 fold 是常见的结束行动
                 if item == "call":
-                    return (2, 0)
+                    return (0, 0)  # call 最优先
                 if item == "fold":
-                    return (2, 1)
+                    return (0, 1)  # fold 次之
+                # 盲位优先（SB, BB 更可能直接 call）
+                if item == "BB":
+                    return (1, 0)
+                if item == "SB":
+                    return (1, 1)
+                if item in POSITIONS:
+                    # 按位置倒序（后位优先，因为他们更可能简单 call）
+                    return (2, 5 - POSITIONS.index(item) if item in POSITIONS else 0)
                 return (3, item)
             
             items = sorted(items, key=sort_key)

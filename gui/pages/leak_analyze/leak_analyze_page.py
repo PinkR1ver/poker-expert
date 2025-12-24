@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QFrame, QStackedWidget, QListWidget, QListWidgetItem
 )
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtGui import QColor, QBrush
 
 from .preflop_range_check import PreflopRangeCheck
@@ -15,6 +15,9 @@ class LeakAnalyzePage(QWidget):
     """
     Leak Analyze 页面，包含功能选择器和内容区域
     """
+    # 转发 replay 请求信号
+    replay_requested = Signal(str)  # hand_id
+    
     def __init__(self, db_manager):
         super().__init__()
         self.db = db_manager
@@ -104,6 +107,7 @@ class LeakAnalyzePage(QWidget):
         
         # Preflop Range Check
         self.preflop_check = PreflopRangeCheck(self.db)
+        self.preflop_check.replay_requested.connect(self.replay_requested.emit)  # 转发 replay 信号
         self.content_area.addWidget(self.preflop_check)
         self.function_widgets["preflop_range_check"] = self.preflop_check
         

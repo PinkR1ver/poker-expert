@@ -79,6 +79,7 @@ class MainWindow(QMainWindow):
         self.page_import.data_changed.connect(self.on_data_changed)
         self.page_cash.hand_selected.connect(self.on_hand_selected)
         self.page_dashboard.report_link_clicked.connect(self.on_report_link_clicked)
+        self.page_leak_analyze.replay_requested.connect(self.on_hand_selected)  # Replay from Leak Analyze
 
         # Add to Stack（与 sidebar 对齐：0=Dashboard,1=Graph,2=Sessions,3=Preflop Range,4=Leak Analyze,5=Report,6=Import）
         self.content_area.addWidget(self.page_dashboard)
