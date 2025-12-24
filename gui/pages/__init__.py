@@ -6,6 +6,7 @@ from .cash_game import CashGamePage, CashGameGraphPage
 from .import_page import ImportPage
 from .replay import ReplayPage
 from .reports import ReportPage
+from .leak_analyze import LeakAnalyzePage
 
 __all__ = [
     'DashboardPage',
@@ -14,4 +15,6 @@ __all__ = [
     'ImportPage',
     'ReplayPage',
     'ReportPage',
+    'LeakAnalyzePage',
 ]
+

@@ -1,0 +1,11 @@
+GTOWizard Solution Settings
+
+Solutions: Cash
+Type: Classic
+Players: 6max
+Available spots: Postflop included
+Stacks: 100
+Bet sizes: General
+Rake: NL50
+Opening size: GTO
+3bet size: GTO

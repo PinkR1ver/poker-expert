@@ -6,7 +6,8 @@ from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QIcon
 
 from db_manager import DBManager
-from gui.pages import DashboardPage, CashGamePage, CashGameGraphPage, ImportPage, ReplayPage, ReportPage
+from gui.pages import DashboardPage, CashGamePage, CashGameGraphPage, ImportPage, ReplayPage, ReportPage, LeakAnalyzePage
+from gui.pages.preflop_range import PreflopRangePage
 from gui.styles import DARK_THEME_QSS, SIDEBAR_COLOR
 
 
@@ -31,7 +32,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("GGPoker Hand Tracker")
-        self.resize(1200, 800)
+        self.resize(1400, 900)
         self.setStyleSheet(DARK_THEME_QSS)
 
         self.db = DBManager()
@@ -49,8 +50,8 @@ class MainWindow(QMainWindow):
         self.sidebar.setFixedWidth(220)
         self.sidebar.currentRowChanged.connect(self.switch_page)
         
-        # Add Items (Replay 不占侧边栏，保留 Dashboard / Cash Game Graph / Sessions / Report / Import)
-        items = ["Dashboard", "Cash Game Graph", "Sessions", "Report", "Import"]
+        # Add Items (Replay 不占侧边栏)
+        items = ["Dashboard", "Cash Game Graph", "Sessions", "Preflop Range", "Leak Analyze", "Report", "Import"]
         # In a real app, you'd add icons here (QIcon)
         for item_text in items:
             item = QListWidgetItem(item_text)
@@ -68,6 +69,8 @@ class MainWindow(QMainWindow):
         self.page_dashboard = DashboardPage(self.db)
         self.page_graph = CashGameGraphPage(self.db)
         self.page_cash = CashGamePage(self.db)
+        self.page_preflop_range = PreflopRangePage(self.db)
+        self.page_leak_analyze = LeakAnalyzePage(self.db)
         self.page_replay = ReplayPage(self.db)  # 内部备用（目前主要给弹窗复用状态）
         self.page_import = ImportPage()
         self.page_report = ReportPage(self.db)
@@ -77,10 +80,12 @@ class MainWindow(QMainWindow):
         self.page_cash.hand_selected.connect(self.on_hand_selected)
         self.page_dashboard.report_link_clicked.connect(self.on_report_link_clicked)
 
-        # Add to Stack（与 sidebar 对齐：0=Dashboard,1=Graph,2=Cash,3=Report,4=Import）
+        # Add to Stack（与 sidebar 对齐：0=Dashboard,1=Graph,2=Sessions,3=Preflop Range,4=Leak Analyze,5=Report,6=Import）
         self.content_area.addWidget(self.page_dashboard)
         self.content_area.addWidget(self.page_graph)
         self.content_area.addWidget(self.page_cash)
+        self.content_area.addWidget(self.page_preflop_range)
+        self.content_area.addWidget(self.page_leak_analyze)
         self.content_area.addWidget(self.page_report)
         self.content_area.addWidget(self.page_import)
 
@@ -95,12 +100,13 @@ class MainWindow(QMainWindow):
         self.page_dashboard.refresh_data()
         self.page_graph.refresh_data()
         self.page_cash.refresh_data()
+        self.page_leak_analyze.refresh_data()
         self.page_report.refresh_data()
     
     def on_report_link_clicked(self, report_id):
         """当用户从 Dashboard 点击报告链接时，切换到 Report 页面并选中对应的报告。"""
-        # 切换到 Report 页面（index 3）
-        self.sidebar.setCurrentRow(3)
+        # 切换到 Report 页面（index 5）
+        self.sidebar.setCurrentRow(5)
         # 选中对应的报告
         self.page_report.select_report(report_id)
 

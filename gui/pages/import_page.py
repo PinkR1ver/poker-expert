@@ -113,3 +113,4 @@ class ImportPage(QWidget):
         self.progress_bar.setVisible(False)
         self.btn_import.setEnabled(True)
         self.data_changed.emit()
+

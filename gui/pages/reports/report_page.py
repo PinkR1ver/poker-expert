@@ -183,3 +183,4 @@ class ReportPage(QWidget):
         current_widget = self.report_content.currentWidget()
         if hasattr(current_widget, "refresh_data"):
             current_widget.refresh_data(None, None)
+

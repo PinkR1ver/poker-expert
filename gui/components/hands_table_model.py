@@ -83,3 +83,4 @@ class HandsTableModel(QAbstractTableModel):
         self.beginResetModel()
         self._data = new_data
         self.endResetModel()
+

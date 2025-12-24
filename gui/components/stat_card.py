@@ -28,3 +28,4 @@ class StatCard(QFrame):
             self.lbl_value.setStyleSheet(f"color: {color};")
         else:
             self.lbl_value.setStyleSheet("")
+

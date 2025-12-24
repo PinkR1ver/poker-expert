@@ -130,6 +130,11 @@ gui/pages/
 ├── cash_game.py             # CashGamePage, CashGameGraphPage
 ├── import_page.py           # ImportPage, ImportWorker
 ├── replay.py                # ReplayPage
+├── preflop_range.py         # PreflopRangePage（GTO Range 查表）
+├── leak_analyze/            # Leak 分析模块
+│   ├── __init__.py
+│   ├── leak_analyze_page.py # LeakAnalyzePage（功能选择器）
+│   └── preflop_range_check.py # PreflopRangeCheck（翻前检查）
 └── reports/                 # 报告模块
     ├── __init__.py
     ├── report_page.py       # ReportPage（报告选择器）
@@ -183,11 +188,98 @@ gui/pages/
 - **数据**: bb/100、Winloss、Flop%、Showdown 统计
 - **切换按钮**: Total/bb/100、$/BB 切换
 - **表格**: 按位置汇总的统计数据
+- **混合级别支持**: 每手牌按实际 BB 计算后累加，支持多级别混合打的正确 bb/100 计算
 
 **ReplayPage** (`gui/pages/replay.py`):
 - **功能**: 手牌回放
 - **组件**: 手牌列表 + 牌桌可视化 + 动作面板
 - **控制**: Prev/Play/Next 按钮
+
+**PreflopRangePage** (`gui/pages/preflop_range.py`):
+- **功能**: GTO Preflop Range 查表（类似 GTO Wizard）
+- **数据源**: `assets/range/` 目录下的 GTO 数据文件
+- **布局**: 左侧控制面板（300px）+ 右侧 Range 矩阵
+
+**左侧控制面板**:
+- **Stack Depth**: 50bb / 100bb / 200bb 选择
+- **Action Sequence**: 行动序列构建器
+  - 显示当前序列（如 "UTG 2bb → HJ 6bb"）
+  - 显示可用的下一步行动（按位置分组、按行动类型着色）
+  - Back/Reset 按钮
+- **View Range (Acted)**: 蓝色按钮，查看已行动位置的 Range
+- **View Strategy (Next)**: 绿色按钮，查看待行动位置的策略
+- **Filter Action**: 策略视图下筛选特定行动
+- **统计信息**: 显示各行动的 combos 和百分比
+
+**右侧 Range 矩阵** (`StrategyMatrixWidget`):
+- **13×13 手牌矩阵**: 标准 range 显示格式
+- **Strategy 视图**: 垂直堆叠多色显示策略分布
+  - 从下到上: Fold → Check → Call → Raise → All-in
+- **Range 视图**: 单色显示特定行动的 range
+- **悬停提示**: 显示手牌详细策略分布
+- **图例**: 动态更新，只显示非零频率的行动
+
+**颜色系统**:
+- **Fold**: 蓝灰色 `#5d6d7e`（作为背景）
+- **Check**: 青色 `#16a085`
+- **Call**: 绿色 `#27ae60`
+- **Raise**: 浅红→深红渐变（根据 bb 大小：2bb 最浅，20bb+ 最深）
+- **All-in**: 橙色 `#e67e22`
+
+**数据结构**:
+```
+assets/range/cash6m_{depth}_nl50_gto_gto/
+└── ranges/
+    └── {opener}/           # UTG, HJ, CO, BTN, SB
+        └── {open_size}/    # 2bb, 2.5bb, allin
+            └── {position}/ # 下一个位置
+                └── {action}/  # call, 6bb, 8bb, allin
+                    └── ...
+                        └── {position}.txt  # Range 文件
+```
+
+**Range 文件格式**:
+```
+AA:1.0,AKs:0.8,AQs:0.5,...  # 手牌:频率
+```
+
+**关键方法**:
+- `_find_range_file()`: 递归搜索行动分支下的第一个 range 文件
+- `_load_strategy()`: 加载某位置的完整策略（所有行动的分布）
+- `_load_acted_range()`: 加载已行动位置的 Range
+- `get_action_color()`: 根据行动类型返回颜色（raise 使用连续渐变）
+
+**LeakAnalyzePage** (`gui/pages/leak_analyze/leak_analyze_page.py`):
+- **功能**: Leak 分析功能集合（类似 Report 页面的结构）
+- **布局**: 左侧功能选择器（200px）+ 右侧内容区域
+
+**左侧功能选择器**:
+- 二级侧边栏，显示可用的 Leak 分析功能
+- 当前功能：Preflop Range Check
+- 未来扩展：Postflop Analysis、Bet Sizing Check 等
+
+**PreflopRangeCheck** (`gui/pages/leak_analyze/preflop_range_check.py`):
+- **功能**: 检查用户 Preflop 行动是否符合 GTO
+- **数据源**: `hand_replay` 表的 JSON 数据 + GTO range 数据
+
+**分析逻辑**:
+1. 从数据库获取所有手牌的 replay 数据
+2. 解析 Hero 的位置（根据 button_seat 计算）
+3. 构建 preflop 行动序列（抽象为 raise/call/fold/allin）
+4. 与 GTO range 数据比对
+5. 判断行动是否正确（GTO 频率 > 1%）
+
+**分析场景**:
+- **Open Raise**: Hero 是第一个 raise 的人
+- **Facing Open**: Hero 面对 opener 的行动（3bet/call/fold）
+
+**结果显示**:
+- 统计概览：总手数、正确率、错误手牌盈亏
+- 详细表格：Hand ID、Cards、Position、Action、GTO Freq、Status、Profit
+
+**关键类**:
+- `AnalyzeWorker (QThread)`: 后台分析线程，避免阻塞 UI
+- `PreflopRangeCheck`: 功能界面，包含分析按钮、进度条、结果表格
 
 #### 4.3 组件模块 (`gui/components/`)
 
@@ -266,4 +358,34 @@ Matplotlib 绘制图表
 - **观察者模式**: Qt Signal/Slot 机制
 - **工厂模式**: `parse_hand()` 创建 `PokerHand` 对象
 - **策略模式**: 不同的筛选策略（日期、X轴模式）
+
+## 重要计算逻辑
+
+### 混合级别 BB 计算
+
+当玩家混合打多个级别（如 $0.01/$0.02 和 $0.05/$0.10）时，BB 值和 bb/100 的计算必须**每手牌单独计算后累加**，而不是用平均 BB 计算总盈利。
+
+**正确做法**:
+```python
+# 每手牌单独计算 BB
+for hand in hands:
+    big_blind = parse_big_blind(hand.blinds)
+    stats["total_bb"] += hand.profit / big_blind
+
+# 最后计算 bb/100
+bb_per_100 = (stats["total_bb"] / total_hands) * 100
+```
+
+**错误做法**（会导致混合级别计算错误）:
+```python
+# 用平均 BB 计算总盈利的 BB 值
+avg_bb = sum(big_blinds) / len(big_blinds)
+total_bb = total_profit / avg_bb  # ❌ 错误
+```
+
+**示例**:
+- 手牌 1: $0.01/$0.02，赢 $0.10 = 5 BB
+- 手牌 2: $0.05/$0.10，输 $0.30 = -3 BB
+- 正确 total_bb = 5 + (-3) = **+2 BB**
+- 错误（用平均 BB）= -$0.20 / $0.06 = **-3.33 BB**
 

@@ -51,7 +51,8 @@ alwaysApply: false
 
 - **Net Won**: 净盈利 = Collected - Wagered
 - **bb/100**: 每百手大盲盈利，衡量技术水平的核心指标
-  - 公式: `(Net Won / Big Blind) / (Hands / 100)`
+  - 公式: `(Total BB Won / Hands) * 100`
+  - **混合级别计算**: 每手牌按实际 BB 计算后累加，不能用平均 BB 计算总盈利
 - **All-in EV**: 全下时的期望值
   - 使用 Monte Carlo 模拟计算 equity
   - `EV = (Total Pot × Equity) - Hero投入`
@@ -123,6 +124,24 @@ alwaysApply: false
   - 保险费用计入 `insurance_premium`
 - **Hand ID**: 手牌唯一标识符，格式如 `RC4122279318`
 
+## GTO 术语
+
+- **GTO** (Game Theory Optimal): 博弈论最优策略，在长期中不可被利用的平衡策略
+- **Range**: 范围，玩家在某个情况下可能持有的所有手牌组合
+- **Strategy**: 策略，玩家在某个决策点上对每手牌的行动分布
+- **Combos**: 组合数，特定手牌的可能组合数量
+  - 对子: 6 combos (如 AA 有 6 种花色组合)
+  - 同花: 4 combos (如 AKs 有 4 种花色)
+  - 非同花: 12 combos (如 AKo 有 12 种组合)
+- **Frequency**: 频率，某个行动在策略中的比例（0.0-1.0）
+- **Mixed Strategy**: 混合策略，对同一手牌使用多种行动（如 60% raise, 40% call）
+- **Pure Strategy**: 纯策略，对某手牌只使用单一行动（频率为 100%）
+- **Open**: 开池，第一个加注
+- **3-Bet**: 三次下注，面对 open raise 后的再加注
+- **4-Bet**: 四次下注，面对 3-bet 后的再加注
+- **Cold Call**: 冷跟，非盲注位置对 open raise 的跟注
+- **Squeeze**: 挤压，面对 open + cold call 后的 3-bet
+
 ## 项目特定术语
 
 - **Parser**: 解析器，`poker_parser.py` 中的解析逻辑
@@ -131,4 +150,11 @@ alwaysApply: false
 - **Dashboard**: 概览页面，显示核心统计和图表
 - **Sessions**: 会话页面，按时间分组显示 session 统计和手牌详情
 - **Session**: 连续打牌的时间段，间隔超过 30 分钟算作不同 session
+- **Preflop Range Page**: GTO Range 查表页面，查看和分析 GTO 策略
+- **Action Sequence**: 行动序列，记录从开池到当前的完整行动线
+- **Strategy View**: 策略视图，显示某位置在决策点的完整策略分布
+- **Range View**: Range 视图，显示某位置某个行动的手牌范围
+- **Leak Analyze Page**: Leak 分析页面，检测用户的策略漏洞
+- **Preflop Range Check**: 翻前范围检查，验证用户行动是否符合 GTO
+- **Leak**: 漏洞，指玩家策略中偏离最优解的行为
 

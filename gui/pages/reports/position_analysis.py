@@ -25,17 +25,18 @@ class PositionTableWidget(QWidget):
         self.overall_stats = {"winloss": 0.0, "flop_pct": 0.0, "showdown_pct": 0.0, "winloss_bb": 0.0, "bb_per_100": 0.0, "won_rake": 0.0, "total_hands": 0}
         self.show_big_blinds = True
         self.show_bb100 = True
-        self.big_blind = 0.02
         self.winloss_min = 0.0
         self.winloss_max = 0.0
         self.setMinimumHeight(300)
         self.setMaximumHeight(350)
         self.setMinimumWidth(700)
     
-    def set_data(self, position_stats, big_blind=0.02):
-        """设置 position 统计数据"""
-        self.big_blind = big_blind
+    def set_data(self, position_stats):
+        """设置 position 统计数据
         
+        注意：position_stats 中的 total_bb 和 rake_bb 已经是按每手牌的实际 BB 计算后累加的，
+        支持混合级别的正确计算。
+        """
         self.position_data = {}
         total_hands = 0
         total_flop_hands = 0
@@ -59,12 +60,13 @@ class PositionTableWidget(QWidget):
             showdown_count = stats.get("showdown_count", 0)
             
             winloss = stats["net_profit"]
-            winloss_bb = (winloss / big_blind) if big_blind > 0 else 0.0
+            # 直接使用已正确计算的 total_bb（每手牌按实际 BB 计算后累加）
+            winloss_bb = stats.get("total_bb", 0.0)
             bb_per_100 = (winloss_bb / stats["total_hands"] * 100) if stats["total_hands"] > 0 else 0.0
             won_rake = stats.get("won_rake", 0.0)
             
-            # Rake 的 BB 和 bb/100 计算
-            rake_bb = (won_rake / big_blind) if big_blind > 0 else 0.0
+            # Rake 的 BB（直接使用已计算的 rake_bb）
+            rake_bb = stats.get("rake_bb", 0.0)
             rake_bb_per_100 = (rake_bb / stats["total_hands"] * 100) if stats["total_hands"] > 0 else 0.0
             
             all_winloss.append(winloss)
@@ -438,10 +440,9 @@ class PositionAnalysisReport(QWidget):
             position_stats[pos] = {
                 "hands": [], "net_profit": 0.0, "won_rake": 0.0,
                 "vpip_count": 0, "three_bet_count": 0, "faced_open_count": 0,
-                "total_hands": 0, "total_bb": 0.0, "flop_count": 0, "showdown_count": 0,
+                "total_hands": 0, "total_bb": 0.0, "rake_bb": 0.0,
+                "flop_count": 0, "showdown_count": 0,
             }
-        
-        big_blinds = []
         
         for row in hands:
             hand_id = row[0]
@@ -466,7 +467,8 @@ class PositionAnalysisReport(QWidget):
                 position_stats[position] = {
                     "hands": [], "net_profit": 0.0, "won_rake": 0.0,
                     "vpip_count": 0, "three_bet_count": 0, "faced_open_count": 0,
-                    "total_hands": 0, "total_bb": 0.0, "flop_count": 0, "showdown_count": 0,
+                    "total_hands": 0, "total_bb": 0.0, "rake_bb": 0.0,
+                    "flop_count": 0, "showdown_count": 0,
                 }
             
             stats = position_stats[position]
@@ -476,7 +478,7 @@ class PositionAnalysisReport(QWidget):
             if profit > 0 and rake > 0:
                 stats["won_rake"] += rake
             
-            # Parse big blind
+            # Parse big blind（每手牌单独解析，支持混合级别）
             blinds_str = row[2] or ""
             big_blind = 0.0
             try:
@@ -496,9 +498,12 @@ class PositionAnalysisReport(QWidget):
             except:
                 pass
             
+            # 每手牌用自己的 big_blind 计算 BB 值（支持混合级别）
             if big_blind > 0:
                 stats["total_bb"] += profit / big_blind
-                big_blinds.append(big_blind)
+                # Rake 也按每手牌的 BB 计算
+                if profit > 0 and rake > 0:
+                    stats["rake_bb"] += rake / big_blind
             
             # Check showdown
             went_to_showdown = bool(row[12] if len(row) > 12 else False)
@@ -520,9 +525,7 @@ class PositionAnalysisReport(QWidget):
             if saw_flop:
                 stats["flop_count"] += 1
         
-        avg_big_blind = sum(big_blinds) / len(big_blinds) if big_blinds else 0.02
-        
-        self.position_table.set_data(position_stats, avg_big_blind)
+        self.position_table.set_data(position_stats)
         self._update_hands_tree(position_stats)
 
     def _update_hands_tree(self, position_stats):
@@ -565,3 +568,4 @@ class PositionAnalysisReport(QWidget):
         self.hands_tree.setColumnWidth(2, 100)
         self.hands_tree.setColumnWidth(3, 100)
         self.hands_tree.setColumnWidth(4, 80)
+

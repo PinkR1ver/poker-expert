@@ -469,3 +469,4 @@ class ReplayPage(QWidget):
 
     def on_toggle_big_blinds(self, state):
         self.table_widget.set_show_big_blinds(bool(state))
+

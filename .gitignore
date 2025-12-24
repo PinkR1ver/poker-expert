@@ -2,3 +2,4 @@
 *.db
 .conda/
 __pycache__/
+.DB_Store/

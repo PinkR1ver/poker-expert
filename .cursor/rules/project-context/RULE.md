@@ -28,6 +28,17 @@ alwaysApply: false
 - ✅ Report 页面：报告选择器 + 报告内容区域
   - ✅ Position Analysis：位置分析报告（扑克桌样式可视化、bb/100、Flop%、Showdown 统计）
 - ✅ Replay 页面：手牌回放功能（独立弹窗 + 内嵌页面）
+- ✅ **Preflop Range 页面**：GTO Range 查表功能（类似 GTO Wizard）
+  - 支持 50bb / 100bb / 200bb 三种筹码深度
+  - 行动序列构建器（Back/Reset 操作）
+  - Range 视图：查看已行动位置的 range
+  - Strategy 视图：查看待行动位置的策略分布（垂直堆叠多色显示）
+  - 颜色系统：Fold(蓝灰)、Check(青)、Call(绿)、Raise(浅红→深红渐变)、All-in(橙)
+- ✅ **Leak Analyze 页面**：Leak 分析功能（带二级侧边栏）
+  - Preflop Range Check：检查翻前行动是否符合 GTO 策略
+    - 分析 Hero 的 open raise 是否在 GTO range 内
+    - 分析面对 open 时的 3bet/call/fold 是否正确
+    - 显示 GTO 频率、状态（正确/错误）、盈亏统计
 - ✅ All-in EV 计算（Monte Carlo 模拟）
 - ✅ Insurance 费用解析与统计
 - ✅ 图表筛选功能（日期范围、X轴切换）
@@ -72,11 +83,20 @@ poker-expert/
 │   │   ├── cash_game.py    # CashGamePage, CashGameGraphPage
 │   │   ├── import_page.py  # ImportPage, ImportWorker
 │   │   ├── replay.py       # ReplayPage
+│   │   ├── preflop_range.py # Preflop Range 页面（GTO 查表）
+│   │   ├── leak_analyze/   # Leak 分析模块
+│   │   │   ├── leak_analyze_page.py  # LeakAnalyzePage（功能选择器）
+│   │   │   └── preflop_range_check.py # Preflop Range Check 分析
 │   │   └── reports/        # 报告模块
 │   │       ├── report_page.py      # ReportPage（报告选择器）
 │   │       └── position_analysis.py # Position Analysis 报告
 │   └── widgets/            # 自定义 widgets
 │       └── replay_table.py # 牌桌可视化组件
+├── assets/                 # 静态资源
+│   └── range/              # GTO Range 数据
+│       ├── cash6m_50bb_nl50_gto_gto/   # 50bb 深度
+│       ├── cash6m_100bb_nl50_gto_gto/  # 100bb 深度
+│       └── cash6m_200bb_nl50_gto_gto/  # 200bb 深度
 ├── dev-doc/                # 开发文档
 └── .cursor/rules/          # Cursor AI 规则文档
 ```
