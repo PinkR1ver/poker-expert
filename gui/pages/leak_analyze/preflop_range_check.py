@@ -385,30 +385,42 @@ class AnalyzeWorker(QThread):
         }
     
     def _find_range_file(self, base_path, position):
-        """递归查找 range 文件"""
-        target_file = f"{position}.txt"
-        direct_path = os.path.join(base_path, target_file)
-        if os.path.exists(direct_path):
-            return direct_path
+        """查找 range 文件 - 使用广度优先搜索找最短路径"""
+        from collections import deque
         
-        try:
-            items = os.listdir(base_path)
-            def sort_key(item):
-                if item == "call":
-                    return (0, item)
-                if item == "fold":
-                    return (1, item)
-                return (2, item)
-            items = sorted(items, key=sort_key)
+        target_file = f"{position}.txt"
+        
+        # BFS 广度优先搜索
+        queue = deque([base_path])
+        
+        while queue:
+            current_path = queue.popleft()
             
-            for item in items:
-                item_path = os.path.join(base_path, item)
-                if os.path.isdir(item_path) and not item.startswith('.'):
-                    result = self._find_range_file(item_path, position)
-                    if result:
-                        return result
-        except:
-            pass
+            # 检查当前目录是否有目标文件
+            direct_path = os.path.join(current_path, target_file)
+            if os.path.exists(direct_path):
+                return direct_path
+            
+            # 将子目录加入队列
+            try:
+                items = os.listdir(current_path)
+                
+                def sort_key(item):
+                    if item == "call":
+                        return (0, 0)
+                    if item == "fold":
+                        return (0, 1)
+                    return (1, item)
+                
+                items = sorted(items, key=sort_key)
+                
+                for item in items:
+                    item_path = os.path.join(current_path, item)
+                    if os.path.isdir(item_path) and not item.startswith('.'):
+                        queue.append(item_path)
+            except:
+                pass
+        
         return None
     
     def _parse_range_file(self, path):

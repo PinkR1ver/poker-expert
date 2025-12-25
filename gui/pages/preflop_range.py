@@ -1032,54 +1032,48 @@ class PreflopRangePage(QWidget):
         self.legend_layout.addStretch()
     
     def _find_range_file(self, base_path, position):
-        """查找某位置的 range 文件
+        """查找某位置的 range 文件 - 使用广度优先搜索找最短路径
         
-        优先查找策略：
-        1. 当前目录直接的 {position}.txt
-        2. 优先查找 "call" 分支（最简单的后续节点，代表原始 open range）
-        3. 然后按位置顺序递归搜索
-        
-        关键：要找的是该位置的 "原始 range"，不是后续决策后的 range
+        关键：找的是该位置的 "原始 range"，应该在最短路径处
+        例如 HJ 3bet 后的 range 应该在 UTG/call/HJ.txt，而不是 BB/allin/.../HJ.txt
         """
+        from collections import deque
+        
         target_file = f"{position}.txt"
         
-        # 先检查当前目录
-        direct_path = os.path.join(base_path, target_file)
-        if os.path.exists(direct_path):
-            return direct_path
+        # BFS 广度优先搜索
+        queue = deque([base_path])
         
-        try:
-            items = os.listdir(base_path)
+        while queue:
+            current_path = queue.popleft()
             
-            # 排序策略：优先找最短路径到 position.txt
-            # 1. "call" 最优先（通常是最简单的后续，保留原始 range）
-            # 2. "fold" 次之
-            # 3. 按位置顺序，盲位优先（SB/BB 更可能直接 call）
-            def sort_key(item):
-                if item == "call":
-                    return (0, 0)  # call 最优先
-                if item == "fold":
-                    return (0, 1)  # fold 次之
-                # 盲位优先（SB, BB 更可能直接 call）
-                if item == "BB":
-                    return (1, 0)
-                if item == "SB":
-                    return (1, 1)
-                if item in POSITIONS:
-                    # 按位置倒序（后位优先，因为他们更可能简单 call）
-                    return (2, 5 - POSITIONS.index(item) if item in POSITIONS else 0)
-                return (3, item)
+            # 检查当前目录是否有目标文件
+            direct_path = os.path.join(current_path, target_file)
+            if os.path.exists(direct_path):
+                return direct_path
             
-            items = sorted(items, key=sort_key)
-            
-            for item in items:
-                item_path = os.path.join(base_path, item)
-                if os.path.isdir(item_path) and not item.startswith('.'):
-                    result = self._find_range_file(item_path, position)
-                    if result:
-                        return result
-        except Exception:
-            pass
+            # 将子目录加入队列（按优先级排序）
+            try:
+                items = os.listdir(current_path)
+                
+                # 排序策略：优先 call/fold，然后按位置顺序
+                def sort_key(item):
+                    if item == "call":
+                        return (0, 0)
+                    if item == "fold":
+                        return (0, 1)
+                    if item in POSITIONS:
+                        return (1, POSITIONS.index(item))
+                    return (2, item)
+                
+                items = sorted(items, key=sort_key)
+                
+                for item in items:
+                    item_path = os.path.join(current_path, item)
+                    if os.path.isdir(item_path) and not item.startswith('.'):
+                        queue.append(item_path)
+            except Exception:
+                pass
         
         return None
     
