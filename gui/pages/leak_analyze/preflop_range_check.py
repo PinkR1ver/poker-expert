@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QTableWidget, QTableWidgetItem, QHeaderView,
     QComboBox, QProgressBar, QScrollArea, QSplitter,
-    QGridLayout, QSizePolicy, QButtonGroup, QListWidget, QListWidgetItem
+    QGridLayout, QSizePolicy, QButtonGroup
 )
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QColor, QPainter, QBrush, QPen, QFont, QCursor
@@ -36,8 +36,17 @@ HAND_MATRIX = [
 # 位置顺序
 POSITIONS = ["UTG", "HJ", "CO", "BTN", "SB", "BB"]
 
-# 最小样本量阈值
-MIN_SAMPLE_SIZE = 5  # 少于这个数量显示 Warning
+
+class NumericTableWidgetItem(QTableWidgetItem):
+    """支持数值排序的 TableWidgetItem"""
+    def __init__(self, text, value=None):
+        super().__init__(text)
+        self._value = value if value is not None else 0
+    
+    def __lt__(self, other):
+        if isinstance(other, NumericTableWidgetItem):
+            return self._value < other._value
+        return super().__lt__(other)
 
 
 class AnalyzeWorker(QThread):
@@ -61,10 +70,21 @@ class AnalyzeWorker(QThread):
             self.error.emit(f"{str(e)}\n{traceback.format_exc()}")
     
     def _analyze_hands(self):
-        """分析所有手牌，按 Position + Card 分组"""
-        # 结果结构: {position: {hand: {"total": n, "correct": n, "incorrect": n, "hands": [...]}}}
-        results = {pos: defaultdict(lambda: {"total": 0, "correct": 0, "incorrect": 0, "profit": 0.0, "hands": []}) 
-                   for pos in POSITIONS}
+        """分析所有手牌，按 Position + Scenario + Card 分组"""
+        # 结果结构: {position: {scenario: {hand: {...}}}}
+        def make_stats():
+            return {
+                "total": 0, 
+                "correct": 0, 
+                "incorrect": 0, 
+                "profit": 0.0, 
+                "hands": [],
+                "action_dist": defaultdict(int),  # 用户实际行动分布
+                "gto_dist": {},  # GTO 建议分布
+            }
+        
+        # 三层嵌套: position -> scenario -> hand
+        results = {pos: defaultdict(lambda: defaultdict(make_stats)) for pos in POSITIONS}
         
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
@@ -97,9 +117,10 @@ class AnalyzeWorker(QThread):
             if analysis:
                 pos = analysis["position"]
                 normalized = analysis["normalized_cards"]
+                scenario = analysis.get("scenario_key", "Other")  # 场景 key
                 
                 if pos in results and normalized:
-                    stats = results[pos][normalized]
+                    stats = results[pos][scenario][normalized]
                     stats["total"] += 1
                     stats["profit"] += profit
                     if analysis["is_correct"]:
@@ -107,12 +128,51 @@ class AnalyzeWorker(QThread):
                     else:
                         stats["incorrect"] += 1
                     stats["hands"].append(analysis)
+                    
+                    # 记录用户行动分布
+                    hero_action = analysis.get("hero_action", "unknown")
+                    stats["action_dist"][hero_action] += 1
+                    
+                    # 记录 GTO 建议
+                    if not stats["gto_dist"] and analysis.get("gto_suggested"):
+                        import re
+                        for suggestion in analysis.get("gto_suggested", []):
+                            match = re.match(r"(\w+).*\((\d+)%\)", suggestion)
+                            if match:
+                                action_name = match.group(1).lower()
+                                freq = int(match.group(2)) / 100
+                                if action_name not in ["fold", "call", "allin", "check"]:
+                                    action_name = "raise"
+                                stats["gto_dist"][action_name] = stats["gto_dist"].get(action_name, 0) + freq
         
         conn.close()
         self.progress.emit(total, total)
         
+        # 计算频率偏移
+        for pos in results:
+            for scenario in results[pos]:
+                for hand, stats in results[pos][scenario].items():
+                    if stats["total"] > 0 and stats["gto_dist"]:
+                        user_dist = {}
+                        for action, count in stats["action_dist"].items():
+                            user_dist[action] = count / stats["total"]
+                        
+                        deviation = 0.0
+                        for action, gto_freq in stats["gto_dist"].items():
+                            user_freq = user_dist.get(action, 0.0)
+                            deviation += abs(user_freq - gto_freq)
+                        
+                        stats["freq_deviation"] = deviation / 2
+                        stats["user_freq"] = {k: f"{v*100:.0f}%" for k, v in user_dist.items()}
+                        stats["gto_freq"] = {k: f"{v*100:.0f}%" for k, v in stats["gto_dist"].items()}
+        
         # 转换为普通 dict
-        return {pos: dict(hands) for pos, hands in results.items()}
+        final = {}
+        for pos in POSITIONS:
+            final[pos] = {}
+            for scenario, hands in results[pos].items():
+                final[pos][scenario] = dict(hands)
+        return final
     
     def _analyze_single_hand(self, hand_id, hero_cards, blinds, profit, payload):
         """分析单手牌"""
@@ -127,7 +187,7 @@ class AnalyzeWorker(QThread):
             return None
         
         preflop_actions = [a for a in actions if a.get("street") == "Preflop"]
-        action_sequence, hero_action = self._build_action_sequence(preflop_actions, hero_name, button_seat, players)
+        action_sequence, hero_action, hero_actions = self._build_action_sequence(preflop_actions, hero_name, button_seat, players)
         
         if not hero_action:
             return None
@@ -136,26 +196,86 @@ class AnalyzeWorker(QThread):
         if not normalized_cards:
             return None
         
+        # 生成 Hero 行动描述 (e.g., "raise → call")
+        hero_action_str = " → ".join(hero_actions) if hero_actions else hero_action
+        
         gto_result = self._check_gto_detailed(action_sequence, hero_position, hero_action, normalized_cards)
         gto_freq = gto_result.get("freq")
-        is_correct = gto_freq is not None and gto_freq > 0.01
+        
+        # 判断是否正确：
+        # - GTO 频率 >= 50%: 正确（这是 GTO 主要推荐的行动）
+        # - GTO 频率 > 0% 但 < 50%: 可接受但非最优（混合策略中的低频行动）
+        # - GTO 频率 = 0% 或 None: 错误
+        if gto_freq is None:
+            is_correct = False
+            is_acceptable = False
+        elif gto_freq >= 0.50:
+            is_correct = True
+            is_acceptable = True
+        elif gto_freq > 0.01:
+            is_correct = False  # 不是最优，但可以接受
+            is_acceptable = True
+        else:
+            is_correct = False
+            is_acceptable = False
+        
+        # 生成场景 key
+        scenario_key = self._get_scenario_key(action_sequence, hero_position, gto_result)
         
         return {
             "hand_id": hand_id,
             "cards": hero_cards,
             "normalized_cards": normalized_cards,
             "position": hero_position,
-            "hero_action": hero_action,
+            "hero_action": hero_action,  # 最后一个行动（用于 GTO 检查）
+            "hero_action_str": hero_action_str,  # 完整行动序列 (e.g., "raise → call")
             "action_sequence": action_sequence,
             "gto_freq": gto_freq,
             "gto_action_type": gto_result.get("action_type"),
             "is_correct": is_correct,
+            "is_acceptable": is_acceptable,
             "profit": profit,
-            # 新增详细信息
-            "vs_position": gto_result.get("vs_position"),  # 对手位置 (e.g. "UTG")
-            "scenario": gto_result.get("scenario"),  # 场景描述 (e.g. "vs UTG open 2bb")
-            "gto_suggested": gto_result.get("suggested_actions"),  # GTO 建议 (e.g. ["fold 85%", "3bet 15%"])
+            "vs_position": gto_result.get("vs_position"),
+            "scenario": gto_result.get("scenario"),
+            "scenario_key": scenario_key,  # 场景分类 key
+            "gto_suggested": gto_result.get("suggested_actions"),
         }
+    
+    def _get_scenario_key(self, action_sequence, hero_position, gto_result):
+        """生成场景分类 key"""
+        # 分析 action_sequence 确定场景类型
+        # action_sequence: [(pos, action), ...]
+        
+        # 找到 Hero 第一次行动的位置
+        hero_action_index = None
+        for i, (pos, act) in enumerate(action_sequence):
+            if pos == hero_position:
+                hero_action_index = i
+                break
+        
+        if hero_action_index is None:
+            return "Other"
+        
+        actions_before = action_sequence[:hero_action_index]
+        
+        # 统计 Hero 之前的 raise 数量和位置
+        raises_before = [(pos, act) for pos, act in actions_before if act in ["raise", "allin"]]
+        
+        if len(raises_before) == 0:
+            # Hero 是第一个 raise 的机会 -> RFI 场景
+            return "RFI"
+        elif len(raises_before) == 1:
+            # 有一个人 raise -> vs X Open
+            opener_pos = raises_before[0][0]
+            return f"vs {opener_pos} Open"
+        elif len(raises_before) == 2:
+            # 有人 open，有人 3bet -> vs X Open, Y 3bet
+            opener_pos = raises_before[0][0]
+            threebetter_pos = raises_before[1][0]
+            return f"vs {opener_pos}/{threebetter_pos} 3bet"
+        else:
+            # 更复杂的场景
+            return "Other"
     
     def _get_position(self, hero_seat, button_seat, num_players):
         """计算 Hero 位置"""
@@ -166,9 +286,10 @@ class AnalyzeWorker(QThread):
         return position_map.get(relative)
     
     def _build_action_sequence(self, preflop_actions, hero_name, button_seat, players):
-        """构建行动序列"""
+        """构建行动序列，返回所有 Hero 行动（使用 poker 术语）"""
         sequence = []
-        hero_action = None
+        hero_actions = []  # 记录所有 Hero 行动
+        raise_count = 0  # 计算 raise 次数来确定是 open/3bet/4bet
         
         seat_to_position = {}
         for p in players:
@@ -190,24 +311,50 @@ class AnalyzeWorker(QThread):
                 continue
             
             abstract_action = None
+            display_action = None  # 用于显示的 poker 术语
+            
             if action_type == "raises" or action_type == "bets":
+                raise_count += 1
                 if is_all_in:
                     abstract_action = "allin"
+                    display_action = "allin"
                 else:
                     abstract_action = "raise"
+                    # 使用 poker 术语
+                    if raise_count == 1:
+                        display_action = "open"
+                    elif raise_count == 2:
+                        display_action = "3bet"
+                    elif raise_count == 3:
+                        display_action = "4bet"
+                    else:
+                        display_action = f"{raise_count+1}bet"
             elif action_type == "calls":
                 abstract_action = "call"
+                display_action = "call"
             elif action_type == "folds":
                 abstract_action = "fold"
+                display_action = "fold"
             elif action_type == "checks":
                 abstract_action = "check"
+                display_action = "check"
             
             if abstract_action:
                 sequence.append((position, abstract_action))
                 if player == hero_name:
-                    hero_action = abstract_action
+                    hero_actions.append(display_action)  # 使用 poker 术语
         
-        return sequence, hero_action
+        # 返回最后一个 hero_action 用于兼容性，同时返回完整列表
+        hero_action = hero_actions[-1] if hero_actions else None
+        # 对于 GTO 检查，需要用 abstract_action（raise/call/fold）
+        abstract_hero_action = None
+        if hero_actions:
+            last = hero_actions[-1]
+            if last in ["open", "3bet", "4bet"] or last.endswith("bet"):
+                abstract_hero_action = "raise"
+            else:
+                abstract_hero_action = last
+        return sequence, abstract_hero_action, hero_actions
     
     def _normalize_hand(self, cards):
         """标准化手牌格式"""
@@ -263,8 +410,16 @@ class AnalyzeWorker(QThread):
         
         actions_before_hero = action_sequence[:hero_action_index]
         
-        if hero_action == "raise" and not any(act == "raise" for _, act in actions_before_hero):
-            return self._check_open_range_detailed(base_path, hero_position, normalized_cards)
+        # 检查是否有人在 hero 之前 raise（open）
+        has_opener_before = any(act == "raise" for _, act in actions_before_hero)
+        
+        if not has_opener_before:
+            # Hero 是第一个 raise 的机会（open 场景）
+            if hero_action == "raise":
+                return self._check_open_range_detailed(base_path, hero_position, normalized_cards)
+            elif hero_action == "fold":
+                # Hero fold 了（open fold）- 检查是否应该 fold
+                return self._check_open_fold_detailed(base_path, hero_position, normalized_cards)
         
         if len(actions_before_hero) > 0:
             opener = None
@@ -308,7 +463,47 @@ class AnalyzeWorker(QThread):
             "freq": freq,
             "action_type": f"open {open_size}",
             "vs_position": None,  # Open 没有对手
-            "scenario": f"{position} Open",
+            "scenario": f"RFI ({position})",  # RFI = Raise First In (第一个 raise 的机会)
+            "suggested_actions": suggested
+        }
+    
+    def _check_open_fold_detailed(self, base_path, position, hand):
+        """检查 open fold 是否正确（不在 open range 内的牌应该 fold）"""
+        pos_path = os.path.join(base_path, position)
+        if not os.path.exists(pos_path):
+            return {"freq": None, "action_type": None}
+        
+        open_sizes = [d for d in os.listdir(pos_path) if os.path.isdir(os.path.join(pos_path, d)) and not d.startswith('.')]
+        if not open_sizes:
+            return {"freq": None, "action_type": None}
+        
+        # 计算所有 open sizes 的总频率
+        total_open_freq = 0
+        open_actions = []
+        
+        for open_size in open_sizes:
+            range_file = self._find_range_file(os.path.join(pos_path, open_size), position)
+            if range_file:
+                range_data = self._parse_range_file(range_file)
+                freq = range_data.get(hand, 0)
+                if freq > 0.01:
+                    total_open_freq += freq
+                    open_actions.append(f"Open {open_size} ({freq*100:.0f}%)")
+        
+        # fold 频率 = 1 - 总 open 频率
+        fold_freq = max(0, 1.0 - total_open_freq)
+        
+        # 构建 GTO 建议
+        suggested = []
+        if fold_freq > 0.01:
+            suggested.append(f"Fold ({fold_freq*100:.0f}%)")
+        suggested.extend(open_actions)
+        
+        return {
+            "freq": fold_freq,  # fold 的 GTO 频率
+            "action_type": "fold",
+            "vs_position": None,
+            "scenario": f"RFI ({position})",  # RFI = Raise First In (第一个 raise 的机会)
             "suggested_actions": suggested
         }
     
@@ -500,22 +695,12 @@ class LeakMatrixWidget(QWidget):
         """绘制单元格"""
         total = stats.get("total", 0)
         correct = stats.get("correct", 0)
-        incorrect = stats.get("incorrect", 0)
+        freq_deviation = stats.get("freq_deviation", 0)
         
-        # 计算颜色
+        # 计算颜色：基于正确率
         if total == 0:
             bg_color = QColor("#2a2a2a")  # 无数据
-        elif total < MIN_SAMPLE_SIZE:
-            # 样本量不足 - 黄色警告
-            accuracy = correct / total if total > 0 else 0
-            if accuracy >= 0.8:
-                bg_color = QColor("#4a4a2a")  # 黄绿
-            elif accuracy >= 0.5:
-                bg_color = QColor("#5a5a2a")  # 黄色
-            else:
-                bg_color = QColor("#5a4a2a")  # 黄红
         else:
-            # 正常样本量
             accuracy = correct / total
             if accuracy >= 0.9:
                 bg_color = QColor("#2a5a2a")  # 深绿 - 很好
@@ -541,19 +726,14 @@ class LeakMatrixWidget(QWidget):
         painter.setPen(text_color)
         painter.drawText(int(x), int(y), int(cell_w), int(cell_h * 0.6), Qt.AlignCenter, hand)
         
-        # 统计文字
+        # 统计文字：显示正确率
         if total > 0:
             accuracy = correct / total * 100
             stat_font = QFont("Arial", max(6, int(min(cell_w, cell_h) / 5)))
             painter.setFont(stat_font)
             
-            # 样本量不足时显示警告符号
-            if total < MIN_SAMPLE_SIZE:
-                stat_text = f"⚠{total}"
-                painter.setPen(QColor("#ffcc00"))
-            else:
-                stat_text = f"{accuracy:.0f}%"
-                painter.setPen(QColor("#cccccc"))
+            stat_text = f"{accuracy:.0f}%"
+            painter.setPen(QColor("#cccccc"))
             
             painter.drawText(int(x), int(y + cell_h * 0.5), int(cell_w), int(cell_h * 0.4),
                            Qt.AlignCenter, stat_text)
@@ -575,11 +755,12 @@ class LeakMatrixWidget(QWidget):
             
             if total > 0:
                 accuracy = correct / total * 100
+                freq_deviation = stats.get("freq_deviation", 0)
                 tooltip = f"{hand}\n"
                 tooltip += f"Hands: {total}"
-                if total < MIN_SAMPLE_SIZE:
-                    tooltip += " ⚠️ 样本量不足"
                 tooltip += f"\nCorrect: {correct} ({accuracy:.1f}%)"
+                if freq_deviation > 0:
+                    tooltip += f"\n频率偏移: {freq_deviation*100:.0f}%"
                 tooltip += f"\nProfit: ${profit:.2f}"
             else:
                 tooltip = f"{hand}\n无数据"
@@ -610,10 +791,11 @@ class PreflopRangeCheck(QWidget):
     def __init__(self, db_manager):
         super().__init__()
         self.db = db_manager
-        self.results = {}  # {position: {hand: stats}}
-        self.current_position = "UTG"
+        self.results = {}  # {position: {scenario: {hand: stats}}}
+        self.current_position = "all"  # "all" 或具体位置
+        self.current_scenario = "all"  # "all" 或具体场景 key
         self.worker = None
-        self.current_hand_data = []  # 当前选中手牌的所有手牌数据
+        self.current_hand_data = []
         self.init_ui()
     
     def init_ui(self):
@@ -722,6 +904,25 @@ class PreflopRangeCheck(QWidget):
         pos_btn_layout.setSpacing(4)
         self.position_buttons = {}
         
+        # "All" 按钮
+        all_btn = QPushButton("All")
+        all_btn.setCheckable(True)
+        all_btn.setChecked(self.current_position == "all")
+        all_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3a3a3a;
+                color: white;
+                border: none;
+                padding: 8px;
+                border-radius: 4px;
+            }
+            QPushButton:hover { background-color: #4a4a4a; }
+            QPushButton:checked { background-color: #4a9eff; }
+        """)
+        all_btn.clicked.connect(lambda checked: self._on_position_selected("all"))
+        pos_btn_layout.addWidget(all_btn, 0, 0, 1, 3)  # 第一行占满
+        self.position_buttons["all"] = all_btn
+        
         for i, pos in enumerate(POSITIONS):
             btn = QPushButton(pos)
             btn.setCheckable(True)
@@ -738,11 +939,45 @@ class PreflopRangeCheck(QWidget):
                 QPushButton:checked { background-color: #4a9eff; }
             """)
             btn.clicked.connect(lambda checked, p=pos: self._on_position_selected(p))
-            pos_btn_layout.addWidget(btn, i // 3, i % 3)
+            pos_btn_layout.addWidget(btn, 1 + i // 3, i % 3)  # 从第二行开始
             self.position_buttons[pos] = btn
         
         pos_layout.addLayout(pos_btn_layout)
         left_layout.addWidget(pos_frame)
+        
+        # Scenario 选择
+        scenario_frame = QFrame()
+        scenario_frame.setStyleSheet("background-color: #2a2a2a; border-radius: 8px;")
+        scenario_layout = QVBoxLayout(scenario_frame)
+        scenario_layout.setContentsMargins(12, 12, 12, 12)
+        
+        scenario_title = QLabel("Scenario")
+        scenario_title.setStyleSheet("color: white; font-weight: bold;")
+        scenario_layout.addWidget(scenario_title)
+        
+        self.scenario_combo = QComboBox()
+        self.scenario_combo.addItem("All Scenarios", "all")
+        self.scenario_combo.setStyleSheet("""
+            QComboBox {
+                background-color: #3a3a3a;
+                color: white;
+                border: none;
+                padding: 8px;
+                border-radius: 4px;
+            }
+            QComboBox:hover { background-color: #4a4a4a; }
+            QComboBox::drop-down { border: none; }
+            QComboBox::down-arrow { image: none; border: none; }
+            QComboBox QAbstractItemView {
+                background-color: #3a3a3a;
+                color: white;
+                selection-background-color: #4a9eff;
+            }
+        """)
+        self.scenario_combo.currentIndexChanged.connect(self._on_scenario_changed)
+        scenario_layout.addWidget(self.scenario_combo)
+        
+        left_layout.addWidget(scenario_frame)
         
         # Summary 统计
         self.summary_frame = QFrame()
@@ -777,7 +1012,6 @@ class PreflopRangeCheck(QWidget):
             ("#5a5a3a", "50-70% 正确"),
             ("#6a4a3a", "30-50% 正确"),
             ("#6a3a3a", "<30% 正确"),
-            ("#5a5a2a", "⚠ 样本不足"),
         ]
         
         for color, text in legends:
@@ -803,40 +1037,81 @@ class PreflopRangeCheck(QWidget):
         
         layout.addWidget(left_panel)
         
-        # 右侧矩阵
+        # 右侧区域 - 使用 QSplitter 分割矩阵和详情
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(24, 24, 24, 24)
+        right_layout.setSpacing(12)
         
         self.matrix_title = QLabel("UTG - Leak Analysis")
         self.matrix_title.setStyleSheet("color: white; font-size: 16px; font-weight: bold;")
         right_layout.addWidget(self.matrix_title)
         
+        # 矩阵区域（固定大小）
         self.leak_matrix = LeakMatrixWidget()
         self.leak_matrix.hand_clicked.connect(self._on_hand_clicked)
-        right_layout.addWidget(self.leak_matrix, 1)
+        self.leak_matrix.setFixedHeight(500)  # 固定矩阵高度（放大）
+        right_layout.addWidget(self.leak_matrix)
         
-        # 手牌详情（可滚动）
-        self.detail_frame = QFrame()
-        self.detail_frame.setStyleSheet("background-color: #2a2a2a; border-radius: 8px;")
-        self.detail_frame.setFixedHeight(220)
-        detail_outer_layout = QVBoxLayout(self.detail_frame)
-        detail_outer_layout.setContentsMargins(12, 12, 12, 12)
-        detail_outer_layout.setSpacing(8)
+        # 下方区域 - 使用水平 QSplitter 分割 Summary 和 Table
+        detail_splitter = QSplitter(Qt.Horizontal)
+        detail_splitter.setStyleSheet("""
+            QSplitter::handle {
+                background-color: #3a3a3a;
+                width: 4px;
+            }
+            QSplitter::handle:hover {
+                background-color: #4a9eff;
+            }
+        """)
+        
+        # 左边: Summary 统计
+        summary_frame = QFrame()
+        summary_frame.setStyleSheet("background-color: #2a2a2a; border-radius: 8px;")
+        summary_frame.setMinimumWidth(200)
+        summary_layout = QVBoxLayout(summary_frame)
+        summary_layout.setContentsMargins(12, 12, 12, 12)
+        summary_layout.setSpacing(8)
         
         self.detail_title = QLabel("点击格子查看详情")
         self.detail_title.setStyleSheet("color: white; font-weight: bold; font-size: 14px;")
-        detail_outer_layout.addWidget(self.detail_title)
+        summary_layout.addWidget(self.detail_title)
         
-        # 统计信息
+        # 统计信息（可滚动）
+        stats_scroll = QScrollArea()
+        stats_scroll.setWidgetResizable(True)
+        stats_scroll.setStyleSheet("""
+            QScrollArea { background-color: transparent; border: none; }
+            QScrollBar:vertical {
+                background-color: #2a2a2a;
+                width: 6px;
+            }
+            QScrollBar::handle:vertical {
+                background-color: #4a4a4a;
+                border-radius: 3px;
+            }
+        """)
+        
         self.detail_stats = QLabel("")
         self.detail_stats.setStyleSheet("color: #aaaaaa; font-size: 12px;")
         self.detail_stats.setWordWrap(True)
-        detail_outer_layout.addWidget(self.detail_stats)
+        self.detail_stats.setAlignment(Qt.AlignTop)
+        stats_scroll.setWidget(self.detail_stats)
+        summary_layout.addWidget(stats_scroll, 1)
+        
+        detail_splitter.addWidget(summary_frame)
+        
+        # 右边: 手牌表格
+        table_frame = QFrame()
+        table_frame.setStyleSheet("background-color: #2a2a2a; border-radius: 8px;")
+        table_frame.setMinimumWidth(400)
+        table_layout = QVBoxLayout(table_frame)
+        table_layout.setContentsMargins(12, 12, 12, 12)
+        table_layout.setSpacing(8)
         
         # 手牌列表标题
         hands_header = QHBoxLayout()
-        hands_label = QLabel("手牌列表 (点击 Replay)")
+        hands_label = QLabel("手牌列表 (双击 Replay)")
         hands_label.setStyleSheet("color: #888888; font-size: 11px;")
         hands_header.addWidget(hands_label)
         
@@ -844,26 +1119,48 @@ class PreflopRangeCheck(QWidget):
         self.filter_label.setStyleSheet("color: #4a9eff; font-size: 11px;")
         hands_header.addWidget(self.filter_label)
         hands_header.addStretch()
-        detail_outer_layout.addLayout(hands_header)
+        table_layout.addLayout(hands_header)
         
-        # 手牌列表
-        self.hand_list = QListWidget()
-        self.hand_list.setStyleSheet("""
-            QListWidget {
+        # 手牌表格
+        self.hand_table = QTableWidget()
+        self.hand_table.setColumnCount(7)
+        self.hand_table.setHorizontalHeaderLabels(["", "手牌", "位置", "你的行动", "场景", "GTO建议", "盈亏"])
+        self.hand_table.horizontalHeader().setStretchLastSection(True)
+        self.hand_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.hand_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.hand_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.hand_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.hand_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+        self.hand_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
+        self.hand_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
+        self.hand_table.verticalHeader().setVisible(False)
+        self.hand_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.hand_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.hand_table.setSortingEnabled(True)  # 启用排序
+        self.hand_table.setStyleSheet("""
+            QTableWidget {
                 background-color: #1e1e1e;
                 border: none;
                 border-radius: 4px;
+                gridline-color: #2a2a2a;
+                font-size: 11px;
             }
-            QListWidget::item {
+            QTableWidget::item {
                 color: white;
-                padding: 6px 8px;
-                border-bottom: 1px solid #2a2a2a;
+                padding: 4px;
             }
-            QListWidget::item:hover {
+            QTableWidget::item:hover {
                 background-color: #3a3a3a;
             }
-            QListWidget::item:selected {
+            QTableWidget::item:selected {
                 background-color: #4a9eff;
+            }
+            QHeaderView::section {
+                background-color: #2a2a2a;
+                color: #888888;
+                padding: 4px;
+                border: none;
+                font-size: 10px;
             }
             QScrollBar:vertical {
                 background-color: #1e1e1e;
@@ -878,11 +1175,16 @@ class PreflopRangeCheck(QWidget):
                 height: 0;
             }
         """)
-        self.hand_list.itemDoubleClicked.connect(self._on_hand_list_clicked)
-        self.hand_list.setCursor(QCursor(Qt.PointingHandCursor))
-        detail_outer_layout.addWidget(self.hand_list, 1)
+        self.hand_table.cellDoubleClicked.connect(self._on_hand_table_clicked)
+        self.hand_table.setCursor(QCursor(Qt.PointingHandCursor))
+        table_layout.addWidget(self.hand_table, 1)
         
-        right_layout.addWidget(self.detail_frame)
+        detail_splitter.addWidget(table_frame)
+        
+        # 设置初始比例 (Summary: Table = 1:2)
+        detail_splitter.setSizes([300, 600])
+        
+        right_layout.addWidget(detail_splitter, 1)  # Splitter 占用剩余空间
         
         layout.addWidget(right_panel, 1)
     
@@ -915,6 +1217,7 @@ class PreflopRangeCheck(QWidget):
     def on_result(self, results):
         """显示结果"""
         self.results = results
+        self._update_scenario_combo()  # 更新场景下拉框
         self._update_position_view()
     
     def on_error(self, error_msg):
@@ -930,19 +1233,70 @@ class PreflopRangeCheck(QWidget):
         self.current_position = position
         for pos, btn in self.position_buttons.items():
             btn.setChecked(pos == position)
+        
+        # 更新 scenario combo
+        self._update_scenario_combo()
         self._update_position_view()
+    
+    def _on_scenario_changed(self, index):
+        """选择场景"""
+        self.current_scenario = self.scenario_combo.itemData(index) or "all"
+        self._update_position_view()
+    
+    def _update_scenario_combo(self):
+        """更新场景下拉框"""
+        self.scenario_combo.blockSignals(True)
+        self.scenario_combo.clear()
+        self.scenario_combo.addItem("All Scenarios", "all")
+        
+        # 收集所有场景
+        all_scenarios = {}
+        positions_to_check = POSITIONS if self.current_position == "all" else [self.current_position]
+        
+        for pos in positions_to_check:
+            if pos in self.results:
+                for scenario, hands in self.results[pos].items():
+                    if scenario not in all_scenarios:
+                        all_scenarios[scenario] = 0
+                    all_scenarios[scenario] += sum(stats["total"] for stats in hands.values())
+        
+        # 排序：Open 优先，然后 vs X Open，然后 Other
+        def scenario_order(s):
+            if s == "Open":
+                return (0, s)
+            elif s.startswith("vs ") and "3bet" not in s:
+                return (1, s)
+            elif "3bet" in s:
+                return (2, s)
+            else:
+                return (3, s)
+        
+        sorted_scenarios = sorted(all_scenarios.keys(), key=scenario_order)
+        
+        for s in sorted_scenarios:
+            count = all_scenarios[s]
+            self.scenario_combo.addItem(f"{s} ({count}手)", s)
+        
+        self.scenario_combo.blockSignals(False)
+        self.current_scenario = "all"
     
     def _update_position_view(self):
         """更新当前位置的视图"""
         pos = self.current_position
-        self.matrix_title.setText(f"{pos} - Leak Analysis")
+        scenario = self.current_scenario
         
-        if pos not in self.results:
+        # 标题
+        pos_text = "All Positions" if pos == "all" else pos
+        scenario_text = "All Scenarios" if scenario == "all" else scenario
+        self.matrix_title.setText(f"{pos_text} - {scenario_text}")
+        
+        if not self.results:
             self.leak_matrix.clear()
             self.summary_label.setText("无数据")
             return
         
-        hand_stats = self.results[pos]
+        # 根据位置和场景筛选/合并数据
+        hand_stats = self._get_merged_hand_stats(pos, scenario)
         self.leak_matrix.set_data(hand_stats)
         
         # 计算统计
@@ -952,40 +1306,131 @@ class PreflopRangeCheck(QWidget):
         
         accuracy = (total_correct / total_hands * 100) if total_hands > 0 else 0
         
-        # 找出最大 leak
+        # 找出最大 leak（按频率偏移）
         leaks = []
         for hand, stats in hand_stats.items():
             total = stats.get("total", 0)
-            if total >= MIN_SAMPLE_SIZE:
-                correct = stats.get("correct", 0)
-                acc = correct / total
-                if acc < 0.5:  # 正确率 < 50%
-                    leaks.append((hand, total, acc, stats.get("profit", 0)))
+            if total > 0:
+                freq_dev = stats.get("freq_deviation", 0)
+                if freq_dev > 0.1:  # 频率偏移 > 10%
+                    leaks.append((hand, total, freq_dev, stats.get("profit", 0), stats.get("user_freq", {}), stats.get("gto_freq", {})))
         
-        leaks.sort(key=lambda x: x[2])  # 按正确率排序
+        leaks.sort(key=lambda x: -x[2])  # 按偏移程度排序
         
         summary_text = f"总手数: {total_hands}\n"
         summary_text += f"正确率: {accuracy:.1f}%\n"
         summary_text += f"盈亏: ${total_profit:.2f}\n"
         
         if leaks:
-            summary_text += f"\n🚨 Top Leaks:\n"
-            for hand, cnt, acc, pft in leaks[:3]:
-                summary_text += f"  {hand}: {acc*100:.0f}% ({cnt}手, ${pft:.2f})\n"
+            summary_text += f"\n🚨 频率偏移最大:\n"
+            for hand, cnt, dev, pft, user_f, gto_f in leaks[:3]:
+                user_str = "/".join(f"{k}:{v}" for k, v in user_f.items())
+                gto_str = "/".join(f"{k}:{v}" for k, v in gto_f.items())
+                summary_text += f"  {hand}: 偏移{dev*100:.0f}%\n"
+                summary_text += f"    你: {user_str}\n"
+                summary_text += f"    GTO: {gto_str}\n"
         
         self.summary_label.setText(summary_text)
         self.summary_label.setStyleSheet("color: white; font-size: 12px;")
     
+    def _group_by_scenario(self, hands_data):
+        """将手牌数据按场景分组，计算每个场景的频率分布"""
+        scenario_stats = {}
+        
+        for h in hands_data:
+            scen = h.get("scenario_key", "Other")
+            if scen not in scenario_stats:
+                scenario_stats[scen] = {
+                    "total": 0,
+                    "action_dist": defaultdict(int),
+                    "gto_dist": {},
+                }
+            
+            scenario_stats[scen]["total"] += 1
+            hero_action = h.get("hero_action", "unknown")
+            scenario_stats[scen]["action_dist"][hero_action] += 1
+            
+            # 记录 GTO（第一次）
+            if not scenario_stats[scen]["gto_dist"] and h.get("gto_suggested"):
+                import re
+                for suggestion in h.get("gto_suggested", []):
+                    match = re.match(r"(\w+).*\((\d+)%\)", suggestion)
+                    if match:
+                        action_name = match.group(1).lower()
+                        freq = int(match.group(2)) / 100
+                        if action_name not in ["fold", "call", "allin", "check"]:
+                            action_name = "raise"
+                        scenario_stats[scen]["gto_dist"][action_name] = scenario_stats[scen]["gto_dist"].get(action_name, 0) + freq
+        
+        # 计算用户频率分布
+        for scen, data in scenario_stats.items():
+            total = data["total"]
+            if total > 0:
+                data["user_dist"] = {k: v / total for k, v in data["action_dist"].items()}
+            else:
+                data["user_dist"] = {}
+        
+        return scenario_stats
+    
+    def _get_merged_hand_stats(self, position, scenario):
+        """获取合并后的手牌统计（用于矩阵显示）"""
+        # 确定要遍历的位置
+        positions_to_check = POSITIONS if position == "all" else [position]
+        
+        merged = {}
+        
+        for pos in positions_to_check:
+            if pos not in self.results:
+                continue
+            
+            # 确定要遍历的场景
+            if scenario != "all":
+                scenarios_to_check = [scenario] if scenario in self.results[pos] else []
+            else:
+                scenarios_to_check = list(self.results[pos].keys())
+            
+            for scen in scenarios_to_check:
+                if scen not in self.results[pos]:
+                    continue
+                for hand, stats in self.results[pos][scen].items():
+                    if hand not in merged:
+                        merged[hand] = {
+                            "total": 0, "correct": 0, "incorrect": 0, "profit": 0.0,
+                            "hands": [], "action_dist": defaultdict(int), "gto_dist": {},
+                        }
+                    merged[hand]["total"] += stats.get("total", 0)
+                    merged[hand]["correct"] += stats.get("correct", 0)
+                    merged[hand]["incorrect"] += stats.get("incorrect", 0)
+                    merged[hand]["profit"] += stats.get("profit", 0)
+                    merged[hand]["hands"].extend(stats.get("hands", []))
+                    for act, cnt in stats.get("action_dist", {}).items():
+                        merged[hand]["action_dist"][act] += cnt
+        
+        # 重新计算频率偏移（合并后）
+        for hand, stats in merged.items():
+            total = stats["total"]
+            if total > 0:
+                user_dist = {}
+                for action, count in stats["action_dist"].items():
+                    user_dist[action] = count / total
+                stats["user_freq"] = {k: f"{v*100:.0f}%" for k, v in user_dist.items()}
+        
+        return merged
+    
     def _on_hand_clicked(self, hand, stats):
         """点击手牌显示详情"""
         total = stats.get("total", 0)
-        self.hand_list.clear()
+        
+        # 禁用排序，清空表格
+        self.hand_table.setSortingEnabled(False)
+        self.hand_table.setRowCount(0)
         self.current_hand_data = []
         
         if total == 0:
             self.detail_title.setText(f"{hand} - 无数据")
             self.detail_stats.setText("")
             self.filter_label.setText("无数据")
+            self.hand_table.setSortingEnabled(True)
             return
         
         correct = stats.get("correct", 0)
@@ -993,45 +1438,86 @@ class PreflopRangeCheck(QWidget):
         profit = stats.get("profit", 0)
         accuracy = correct / total * 100
         
-        self.detail_title.setText(f"{hand} @ {self.current_position}")
-        
-        # 统计信息
-        stats_text = f"总手数: {total}"
-        if total < MIN_SAMPLE_SIZE:
-            stats_text += " ⚠️ 样本量不足"
-        stats_text += f"  |  正确: {correct} ({accuracy:.1f}%)  |  错误: {incorrect}"
-        stats_text += f"  |  盈亏: ${profit:.2f}"
-        self.detail_stats.setText(stats_text)
+        pos_text = "All Positions" if self.current_position == "all" else self.current_position
+        self.detail_title.setText(f"{hand} @ {pos_text}")
         
         # 获取手牌数据
         hands_data = stats.get("hands", [])
+        
+        # 按场景分组统计
+        scenario_stats = self._group_by_scenario(hands_data)
+        
+        # 构建统计文本
+        stats_text = f"总手数: {total}  |  正确: {correct} ({accuracy:.1f}%)  |  盈亏: ${profit:.2f}\n"
+        
+        # 显示每个场景的频率对比
+        for scen, scen_data in scenario_stats.items():
+            scen_total = scen_data["total"]
+            user_dist = scen_data["user_dist"]
+            gto_dist = scen_data["gto_dist"]
+            
+            user_str = " / ".join(f"{k}: {v*100:.0f}%" for k, v in sorted(user_dist.items()))
+            gto_str = " / ".join(f"{k}: {v*100:.0f}%" for k, v in sorted(gto_dist.items())) if gto_dist else "N/A"
+            
+            # 计算偏移
+            deviation = 0.0
+            if gto_dist:
+                for action, gto_freq in gto_dist.items():
+                    user_freq = user_dist.get(action, 0.0)
+                    deviation += abs(user_freq - gto_freq)
+                deviation /= 2
+            
+            icon = "🚨" if deviation > 0.1 else "✅"
+            stats_text += f"\n{icon} {scen} ({scen_total}手):\n"
+            stats_text += f"   你: {user_str}\n"
+            stats_text += f"   GTO: {gto_str}"
+        
+        self.detail_stats.setText(stats_text)
+        
         self.current_hand_data = hands_data
         
-        # 显示所有手牌（错误的优先）
-        incorrect_hands = [h for h in hands_data if not h.get("is_correct")]
+        # 分类：错误 -> 可接受但非最优 -> 正确
+        error_hands = [h for h in hands_data if not h.get("is_acceptable", False)]
+        suboptimal_hands = [h for h in hands_data if h.get("is_acceptable") and not h.get("is_correct")]
         correct_hands = [h for h in hands_data if h.get("is_correct")]
         
-        self.filter_label.setText(f"全部 {len(hands_data)} 手 (❌{len(incorrect_hands)} ✅{len(correct_hands)})")
+        self.filter_label.setText(f"全部 {len(hands_data)} 手 (❌{len(error_hands)} ⚠️{len(suboptimal_hands)} ✅{len(correct_hands)})")
         
-        # 先显示错误的
-        for h in incorrect_hands:
-            self._add_hand_to_list(h, is_correct=False)
-        
-        # 再显示正确的
+        # 按优先级显示：错误 -> 可接受但非最优 -> 正确
+        for h in error_hands:
+            self._add_hand_to_table(h)
+        for h in suboptimal_hands:
+            self._add_hand_to_table(h)
         for h in correct_hands:
-            self._add_hand_to_list(h, is_correct=True)
+            self._add_hand_to_table(h)
+        
+        # 重新启用排序
+        self.hand_table.setSortingEnabled(True)
     
-    def _add_hand_to_list(self, hand_data, is_correct):
-        """添加手牌到列表"""
+    def _add_hand_to_table(self, hand_data):
+        """添加手牌到表格"""
         cards = hand_data.get("cards", "?")
-        hero_action = hand_data.get("hero_action", "?")
+        # 使用完整行动序列，如 "raise → call"
+        hero_action = hand_data.get("hero_action_str", hand_data.get("hero_action", "?"))
         scenario = hand_data.get("scenario", "")
         vs_position = hand_data.get("vs_position", "")
         gto_suggested = hand_data.get("gto_suggested", [])
+        gto_freq = hand_data.get("gto_freq")
         profit = hand_data.get("profit", 0)
+        is_correct = hand_data.get("is_correct", False)
+        is_acceptable = hand_data.get("is_acceptable", False)
+        hand_id = hand_data.get("hand_id")
         
-        # 构建显示文本
-        icon = "✅" if is_correct else "❌"
+        # 图标和颜色
+        if is_correct:
+            icon = "✅"
+            color = QColor("#4CAF50")
+        elif is_acceptable:
+            icon = "⚠️"
+            color = QColor("#FF9800")
+        else:
+            icon = "❌"
+            color = QColor("#f44336")
         
         # 场景描述
         if scenario:
@@ -1041,33 +1527,67 @@ class PreflopRangeCheck(QWidget):
         else:
             scenario_text = "Open"
         
-        # GTO 建议
-        if gto_suggested:
-            gto_text = " / ".join(gto_suggested[:2])  # 最多显示2个
-        else:
-            gto_text = "N/A"
+        # GTO 建议（简化显示）
+        gto_text = " / ".join(gto_suggested[:2]) if gto_suggested else "N/A"
         
-        # 盈亏颜色提示
+        # 你的行动（不显示百分比，百分比在 summary 里显示）
+        action_text = hero_action
+        
+        # 盈亏
         profit_text = f"${profit:.2f}" if profit >= 0 else f"-${abs(profit):.2f}"
+        profit_color = QColor("#4CAF50") if profit >= 0 else QColor("#f44336")
         
-        display_text = f"{icon} {cards}  |  你: {hero_action}  |  {scenario_text}  |  GTO: {gto_text}  |  {profit_text}"
+        # 添加行
+        row = self.hand_table.rowCount()
+        self.hand_table.insertRow(row)
         
-        item = QListWidgetItem(display_text)
-        item.setData(Qt.UserRole, hand_data.get("hand_id"))
+        # 图标列 (0)
+        icon_item = QTableWidgetItem(icon)
+        icon_item.setTextAlignment(Qt.AlignCenter)
+        icon_item.setData(Qt.UserRole, hand_id)
+        self.hand_table.setItem(row, 0, icon_item)
         
-        # 根据正确与否设置颜色
-        if is_correct:
-            item.setForeground(QColor("#4CAF50"))  # 绿色
-        else:
-            item.setForeground(QColor("#f44336"))  # 红色
+        # 手牌列 (1)
+        cards_item = QTableWidgetItem(cards)
+        cards_item.setForeground(color)
+        self.hand_table.setItem(row, 1, cards_item)
         
-        self.hand_list.addItem(item)
+        # 位置列 (2)
+        position = hand_data.get("position", "?")
+        pos_item = QTableWidgetItem(position)
+        pos_item.setForeground(QColor("#4a9eff"))
+        self.hand_table.setItem(row, 2, pos_item)
+        
+        # 你的行动列 (3)
+        action_item = QTableWidgetItem(action_text)
+        action_item.setForeground(color)
+        self.hand_table.setItem(row, 3, action_item)
+        
+        # 场景列 (4)
+        scenario_item = QTableWidgetItem(scenario_text)
+        scenario_item.setForeground(QColor("#888888"))
+        self.hand_table.setItem(row, 4, scenario_item)
+        
+        # GTO 建议列 (5)
+        gto_item = QTableWidgetItem(gto_text)
+        gto_item.setForeground(QColor("#aaaaaa"))
+        self.hand_table.setItem(row, 5, gto_item)
+        
+        # 盈亏列 (6) - 使用 NumericTableWidgetItem 支持数值排序
+        profit_item = NumericTableWidgetItem(profit_text, profit)
+        profit_item.setForeground(profit_color)
+        profit_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.hand_table.setItem(row, 6, profit_item)
     
-    def _on_hand_list_clicked(self, item):
+    def _on_hand_table_clicked(self, row, col):
         """双击手牌打开 replay"""
-        hand_id = item.data(Qt.UserRole)
-        if hand_id:
-            self.replay_requested.emit(hand_id)
+        # 从第 0 列获取 hand_id
+        icon_item = self.hand_table.item(row, 0)
+        if icon_item:
+            hand_id = icon_item.data(Qt.UserRole)
+            if hand_id:
+                self.replay_requested.emit(hand_id)
     
     def refresh_data(self):
         pass
+

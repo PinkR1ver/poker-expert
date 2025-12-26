@@ -7,6 +7,7 @@ from .import_page import ImportPage
 from .replay import ReplayPage
 from .reports import ReportPage
 from .leak_analyze import LeakAnalyzePage
+from .solver.solver_page import SolverPage
 
 __all__ = [
     'DashboardPage',
@@ -16,5 +17,6 @@ __all__ = [
     'ReplayPage',
     'ReportPage',
     'LeakAnalyzePage',
+    'SolverPage',
 ]
 

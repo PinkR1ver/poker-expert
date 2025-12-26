@@ -6,7 +6,7 @@ from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QIcon
 
 from db_manager import DBManager
-from gui.pages import DashboardPage, CashGamePage, CashGameGraphPage, ImportPage, ReplayPage, ReportPage, LeakAnalyzePage
+from gui.pages import DashboardPage, CashGamePage, CashGameGraphPage, ImportPage, ReplayPage, ReportPage, LeakAnalyzePage, SolverPage
 from gui.pages.preflop_range import PreflopRangePage
 from gui.styles import DARK_THEME_QSS, SIDEBAR_COLOR
 
@@ -32,7 +32,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("GGPoker Hand Tracker")
-        self.resize(1400, 900)
+        self.resize(1600, 950)  # 加宽窗口
         self.setStyleSheet(DARK_THEME_QSS)
 
         self.db = DBManager()
@@ -51,7 +51,7 @@ class MainWindow(QMainWindow):
         self.sidebar.currentRowChanged.connect(self.switch_page)
         
         # Add Items (Replay 不占侧边栏)
-        items = ["Dashboard", "Cash Game Graph", "Sessions", "Preflop Range", "Leak Analyze", "Report", "Import"]
+        items = ["Dashboard", "Cash Game Graph", "Sessions", "Preflop Range", "Leak Analyze", "Solver", "Report", "Import"]
         # In a real app, you'd add icons here (QIcon)
         for item_text in items:
             item = QListWidgetItem(item_text)
@@ -71,6 +71,7 @@ class MainWindow(QMainWindow):
         self.page_cash = CashGamePage(self.db)
         self.page_preflop_range = PreflopRangePage(self.db)
         self.page_leak_analyze = LeakAnalyzePage(self.db)
+        self.page_solver = SolverPage(self.db)
         self.page_replay = ReplayPage(self.db)  # 内部备用（目前主要给弹窗复用状态）
         self.page_import = ImportPage()
         self.page_report = ReportPage(self.db)
@@ -81,12 +82,13 @@ class MainWindow(QMainWindow):
         self.page_dashboard.report_link_clicked.connect(self.on_report_link_clicked)
         self.page_leak_analyze.replay_requested.connect(self.on_hand_selected)  # Replay from Leak Analyze
 
-        # Add to Stack（与 sidebar 对齐：0=Dashboard,1=Graph,2=Sessions,3=Preflop Range,4=Leak Analyze,5=Report,6=Import）
+        # Add to Stack（与 sidebar 对齐：0=Dashboard,1=Graph,2=Sessions,3=Preflop Range,4=Leak Analyze,5=Solver,6=Report,7=Import）
         self.content_area.addWidget(self.page_dashboard)
         self.content_area.addWidget(self.page_graph)
         self.content_area.addWidget(self.page_cash)
         self.content_area.addWidget(self.page_preflop_range)
         self.content_area.addWidget(self.page_leak_analyze)
+        self.content_area.addWidget(self.page_solver)
         self.content_area.addWidget(self.page_report)
         self.content_area.addWidget(self.page_import)
 

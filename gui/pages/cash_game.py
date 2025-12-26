@@ -138,7 +138,7 @@ class HandsDetailTableModel(QAbstractTableModel):
     def __init__(self, data=None):
         super().__init__()
         self._data = data if data else []
-        self._headers = ["Time", "Stakes", "Stack(bb)", "Cards", "Line", "Board", "Net Won", "bb", "Pos", "PF Line"]
+        self._headers = ["Time", "Stakes", "Stack(bb)", "Cards", "Line", "Board", "Net Won", "bb", "Pos", "Pot Type"]
 
     def rowCount(self, parent=None):
         return len(self._data)
@@ -189,7 +189,7 @@ class HandsDetailTableModel(QAbstractTableModel):
         if role == Qt.TextAlignmentRole:
             if col in [2, 6, 7]:  # 数字列右对齐
                 return Qt.AlignRight | Qt.AlignVCenter
-            if col in [8, 9]:  # 位置和 PF Line 居中
+            if col in [8, 9]:  # 位置和 Pot Type 居中
                 return Qt.AlignCenter
 
         return None
@@ -440,7 +440,7 @@ class CashGamePage(QWidget):
         hands_header.setSectionResizeMode(6, QHeaderView.ResizeToContents)  # Net Won
         hands_header.setSectionResizeMode(7, QHeaderView.ResizeToContents)  # bb
         hands_header.setSectionResizeMode(8, QHeaderView.ResizeToContents)  # Pos
-        hands_header.setSectionResizeMode(9, QHeaderView.ResizeToContents)  # PF Line
+        hands_header.setSectionResizeMode(9, QHeaderView.ResizeToContents)  # Pot Type
 
     def _calculate_sessions(self, hands):
         """计算 sessions 统计和手牌详情"""
@@ -733,16 +733,17 @@ class CashGamePage(QWidget):
         """计算行动线
 
         Line: Hero 在各街的行动线
-        PF Line: Hero 的翻前行动类型
+        Pot Type: 翻前 Pot 类型（SRP, 3Bet, 4Bet, etc.）
         """
-        # Hero 的翻前行动（用于 PF Line）
-        hero_pf_actions = []
-        
         # Hero 在各街的行动（用于 Line，包括 Preflop）
         hero_street_actions = {"Preflop": [], "Flop": [], "Turn": [], "River": []}
 
-        first_raise_player = None
-        hero_faced_raise = False
+        # 统计 preflop 的 raise 次数和 all-in
+        pf_raise_count = 0
+        pf_has_allin = False
+        pf_has_limp = False  # 有人 limp（call BB）
+        pf_has_any_action = False  # 是否有任何非 fold 行动
+        pf_all_fold = True  # 是否所有人都 fold
         
         # 只记录这些实际行动
         valid_actions = {"bets", "raises", "calls", "checks", "folds", "all_in"}
@@ -754,21 +755,40 @@ class CashGamePage(QWidget):
             street = act.get("street", "")
             player = act.get("player")
             action_type = act.get("action_type", "")
+            is_all_in = act.get("is_all_in", False)
             
             # 只处理有效的实际行动
             if action_type not in valid_actions:
                 continue
 
             if street == "Preflop":
-                # 跟踪第一个加注者（用于判断 3Bet）
-                if action_type == "raises" and first_raise_player is None:
-                    first_raise_player = player
-                    if player != hero_name:
-                        hero_faced_raise = True
+                # 统计 raise
+                if action_type == "raises":
+                    pf_raise_count += 1
+                    pf_all_fold = False
+                    pf_has_any_action = True
+                
+                # 统计 limp (call 且还没有 raise)
+                if action_type == "calls" and pf_raise_count == 0:
+                    pf_has_limp = True
+                    pf_all_fold = False
+                    pf_has_any_action = True
+                elif action_type == "calls":
+                    pf_all_fold = False
+                    pf_has_any_action = True
+                
+                # 统计 all-in
+                if is_all_in or action_type == "all_in":
+                    pf_has_allin = True
+                    pf_all_fold = False
+                    pf_has_any_action = True
+                
+                if action_type == "checks":
+                    pf_all_fold = False
+                    pf_has_any_action = True
 
                 # Hero 的翻前行动
                 if player == hero_name:
-                    hero_pf_actions.append(action_type)
                     hero_street_actions["Preflop"].append(action_type)
 
             elif street in hero_street_actions:
@@ -776,22 +796,29 @@ class CashGamePage(QWidget):
                 if player == hero_name:
                     hero_street_actions[street].append(action_type)
         
-        # PF Line 简化（Hero 的翻前行动类型）
-        pf_line = ""
-        if hero_pf_actions:
-            has_raise = "raises" in hero_pf_actions
-            has_call = "calls" in hero_pf_actions
-            has_fold = "folds" in hero_pf_actions
-            
-            if has_raise:
-                if hero_faced_raise:
-                    pf_line = "3B"  # 3-bet
-                else:
-                    pf_line = "Raiser"  # Open raise
-            elif has_call:
-                pf_line = "C"
-            elif has_fold:
-                pf_line = "F"
+        # 确定 Pot Type
+        pot_type = ""
+        if pf_all_fold or not pf_has_any_action:
+            pot_type = "Walk"
+        elif pf_raise_count == 0:
+            if pf_has_limp:
+                pot_type = "Limp"
+            else:
+                pot_type = "Walk"
+        elif pf_raise_count == 1:
+            pot_type = "SRP"  # Single Raise Pot
+        elif pf_raise_count == 2:
+            pot_type = "3Bet"
+        elif pf_raise_count == 3:
+            pot_type = "4Bet"
+        elif pf_raise_count == 4:
+            pot_type = "5Bet"
+        else:
+            pot_type = f"{pf_raise_count + 1}Bet"
+        
+        # 如果有 all-in，添加标记
+        if pf_has_allin and pot_type not in ["Walk", ""]:
+            pot_type += " AI"
         
         # Action Line: Hero 在各街的行动缩写（包括 Preflop）
         action_abbrev = {
@@ -808,7 +835,7 @@ class CashGamePage(QWidget):
 
         line = ",".join(line_parts) if line_parts else ""
 
-        return line, pf_line
+        return line, pot_type
 
     def _update_summary_display(self):
         """更新 Summary 区域显示"""
