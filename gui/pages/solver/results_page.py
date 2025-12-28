@@ -217,23 +217,55 @@ class EquityLineChart(QWidget):
 
 
 class HandEquityBar(QWidget):
-    """手牌 Equity 条形图"""
+    """手牌 Equity 条形图 - 支持 combo 级别显示"""
+    
+    SUIT_SYMBOLS = {'s': '♠', 'h': '♥', 'd': '♦', 'c': '♣'}
+    SUIT_COLORS = {'s': '#1a1a1a', 'h': '#e74c3c', 'd': '#3498db', 'c': '#27ae60'}
+    
     def __init__(self):
         super().__init__()
         self.hand = ""
         self.equity = 0.0
         self.player = "OOP"
-        self.setFixedSize(140, 55)
+        self.combos = []  # [(combo_str, equity, is_valid), ...]
+        self.setMinimumSize(140, 55)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
     
     def set_data(self, hand: str, equity: float, player: str):
+        """设置单个 equity（旧接口，兼容）"""
         self.hand = hand
         self.equity = equity
         self.player = player
+        self.combos = []
+        self.setFixedHeight(55)
+        self.update()
+    
+    def set_combo_data(self, hand: str, combos: list, player: str):
+        """
+        设置 combo 级别的 equity
+        combos: [(combo_str, equity, is_valid), ...]
+        """
+        self.hand = hand
+        self.combos = combos
+        self.player = player
+        
+        # 计算平均 equity（只计算有效 combo）
+        valid_combos = [c for c in combos if c[2]]
+        if valid_combos:
+            self.equity = sum(c[1] for c in valid_combos) / len(valid_combos)
+        else:
+            self.equity = 0.0
+        
+        # 根据 combo 数量调整高度
+        height = 45 + len(combos) * 18
+        self.setFixedHeight(height)
         self.update()
     
     def clear(self):
         self.hand = ""
         self.equity = 0.0
+        self.combos = []
+        self.setFixedHeight(55)
         self.update()
     
     def paintEvent(self, event):
@@ -251,6 +283,7 @@ class HandEquityBar(QWidget):
             painter.end()
             return
         
+        # 标题
         painter.setPen(QColor("#4a9eff"))
         font = QFont()
         font.setPixelSize(13)
@@ -258,27 +291,93 @@ class HandEquityBar(QWidget):
         painter.setFont(font)
         painter.drawText(0, 2, self.width(), 16, Qt.AlignCenter, self.hand)
         
-        bar_w = self.width() - 20
-        bar_h = 12
-        bar_x = 10
-        bar_y = 22
+        y_offset = 20
         
-        painter.setBrush(QBrush(QColor("#2a2a2a")))
-        painter.setPen(Qt.NoPen)
-        painter.drawRoundedRect(bar_x, bar_y, bar_w, bar_h, 4, 4)
-        
-        eq_w = int(bar_w * self.equity / 100)
-        painter.setBrush(QBrush(QColor("#27ae60")))
-        painter.drawRoundedRect(bar_x, bar_y, eq_w, bar_h, 4, 4)
-        
-        painter.setPen(QColor("white"))
-        font.setPixelSize(10)
-        font.setBold(False)
-        painter.setFont(font)
-        painter.drawText(0, bar_y + bar_h + 4, self.width(), 14, Qt.AlignCenter,
-                        f"Equity: {self.equity:.1f}%")
+        if self.combos:
+            # Combo 级别显示
+            font.setPixelSize(9)
+            font.setBold(False)
+            painter.setFont(font)
+            
+            valid_count = sum(1 for c in self.combos if c[2])
+            invalid_count = len(self.combos) - valid_count
+            
+            painter.setPen(QColor("#888888"))
+            painter.drawText(0, y_offset, self.width(), 14, Qt.AlignCenter,
+                           f"({valid_count} valid, {invalid_count} blocked)")
+            y_offset += 16
+            
+            for combo_str, eq, is_valid in self.combos:
+                # 解析花色来显示彩色符号
+                if len(combo_str) >= 4:
+                    c1 = combo_str[:2]
+                    c2 = combo_str[2:]
+                    display = self._format_combo(c1, c2)
+                else:
+                    display = combo_str
+                
+                if is_valid:
+                    # 有效 combo：显示 equity bar
+                    bar_w = 60
+                    bar_h = 10
+                    bar_x = 70
+                    
+                    painter.setPen(QColor("#ffffff"))
+                    painter.drawText(5, y_offset, 65, 14, Qt.AlignLeft, display)
+                    
+                    painter.setBrush(QBrush(QColor("#2a2a2a")))
+                    painter.setPen(Qt.NoPen)
+                    painter.drawRoundedRect(bar_x, y_offset + 2, bar_w, bar_h, 3, 3)
+                    
+                    eq_w = int(bar_w * eq / 100)
+                    painter.setBrush(QBrush(QColor("#27ae60")))
+                    painter.drawRoundedRect(bar_x, y_offset + 2, eq_w, bar_h, 3, 3)
+                    
+                    painter.setPen(QColor("#ffffff"))
+                    painter.drawText(bar_x + bar_w + 3, y_offset, 40, 14, Qt.AlignLeft, f"{eq:.0f}%")
+                else:
+                    # 无效 combo：划掉
+                    painter.setPen(QColor("#555555"))
+                    painter.drawText(5, y_offset, 65, 14, Qt.AlignLeft, display)
+                    
+                    painter.setPen(QPen(QColor("#ff4444"), 1))
+                    painter.drawLine(5, y_offset + 7, 60, y_offset + 7)
+                    
+                    painter.setPen(QColor("#555555"))
+                    painter.drawText(70, y_offset, 60, 14, Qt.AlignLeft, "blocked")
+                
+                y_offset += 16
+        else:
+            # 旧模式：单个 equity
+            bar_w = self.width() - 20
+            bar_h = 12
+            bar_x = 10
+            bar_y = 22
+            
+            painter.setBrush(QBrush(QColor("#2a2a2a")))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(bar_x, bar_y, bar_w, bar_h, 4, 4)
+            
+            eq_w = int(bar_w * self.equity / 100)
+            painter.setBrush(QBrush(QColor("#27ae60")))
+            painter.drawRoundedRect(bar_x, bar_y, eq_w, bar_h, 4, 4)
+            
+            painter.setPen(QColor("white"))
+            font.setPixelSize(10)
+            font.setBold(False)
+            painter.setFont(font)
+            painter.drawText(0, bar_y + bar_h + 4, self.width(), 14, Qt.AlignCenter,
+                            f"Equity: {self.equity:.1f}%")
         
         painter.end()
+    
+    def _format_combo(self, c1: str, c2: str) -> str:
+        """格式化 combo 显示，用花色符号"""
+        r1, s1 = c1[0], c1[1]
+        r2, s2 = c2[0], c2[1]
+        sym1 = self.SUIT_SYMBOLS.get(s1, s1)
+        sym2 = self.SUIT_SYMBOLS.get(s2, s2)
+        return f"{r1}{sym1}{r2}{sym2}"
 
 
 class HandStrategyBar(QWidget):
@@ -363,16 +462,25 @@ class HandStrategyBar(QWidget):
 
 
 class ConvergenceLineChart(QWidget):
-    """Convergence 折线图"""
+    """Convergence 折线图 - 显示真实历史数据"""
     def __init__(self):
         super().__init__()
         self.iterations = 0
         self.avg_regret = 1.0
+        self.regret_history = []  # 存储历史 regret 值
         self.setFixedSize(160, 130)
     
     def set_data(self, iterations: int, avg_regret: float):
         self.iterations = iterations
         self.avg_regret = avg_regret
+        self.update()
+    
+    def set_history(self, history: list):
+        """设置 regret 历史数据"""
+        self.regret_history = history
+        if history:
+            self.avg_regret = history[-1]
+            self.iterations = len(history)
         self.update()
     
     def paintEvent(self, event):
@@ -403,10 +511,16 @@ class ConvergenceLineChart(QWidget):
         painter.drawLine(margin_left, margin_top, margin_left, margin_top + h)
         painter.drawLine(margin_left, margin_top + h, margin_left + w, margin_top + h)
         
-        max_regret = max(1.0, self.avg_regret * 1.2)
+        # 计算 Y 轴范围
+        if self.regret_history:
+            max_regret = max(self.regret_history) * 1.2
+            max_regret = max(1.0, max_regret)
+        else:
+            max_regret = max(1.0, self.avg_regret * 1.2)
+        
         painter.setPen(QColor("#888888"))
-        painter.drawText(10, margin_top - 2, 18, 12, Qt.AlignRight, f"{max_regret:.1f}")
-        painter.drawText(10, margin_top + h // 2 - 6, 18, 12, Qt.AlignRight, f"{max_regret/2:.1f}")
+        painter.drawText(10, margin_top - 2, 18, 12, Qt.AlignRight, f"{max_regret:.0f}")
+        painter.drawText(10, margin_top + h // 2 - 6, 18, 12, Qt.AlignRight, f"{max_regret/2:.0f}")
         painter.drawText(10, margin_top + h - 6, 18, 12, Qt.AlignRight, "0")
         
         painter.drawText(margin_left - 5, margin_top + h + 3, 20, 12, Qt.AlignCenter, "0")
@@ -418,18 +532,32 @@ class ConvergenceLineChart(QWidget):
         painter.setPen(QPen(QColor("#333333"), 1, Qt.DotLine))
         painter.drawLine(margin_left, margin_top + h // 2, margin_left + w, margin_top + h // 2)
         
+        # 绘制真实历史曲线
         painter.setPen(QPen(QColor("#4a9eff"), 2))
         points = []
-        for i in range(25):
-            x = margin_left + int(i / 24 * w)
-            progress = i / 24
-            regret = max_regret * (1 - progress) ** 1.5 + self.avg_regret * progress
-            y = margin_top + int((1 - min(1, regret / max_regret)) * h)
-            points.append((x, y))
+        
+        if self.regret_history and len(self.regret_history) > 1:
+            # 采样点（最多 50 个点）
+            n = len(self.regret_history)
+            step = max(1, n // 50)
+            sampled = self.regret_history[::step]
+            if self.regret_history[-1] not in sampled:
+                sampled.append(self.regret_history[-1])
+            
+            for i, regret in enumerate(sampled):
+                x = margin_left + int(i / (len(sampled) - 1) * w) if len(sampled) > 1 else margin_left
+                y = margin_top + int((1 - min(1, regret / max_regret)) * h)
+                points.append((x, y))
+        else:
+            # 没有历史，画单点
+            x = margin_left + w
+            y = margin_top + int((1 - min(1, self.avg_regret / max_regret)) * h)
+            points = [(margin_left, margin_top), (x, y)]
         
         for i in range(len(points) - 1):
             painter.drawLine(points[i][0], points[i][1], points[i+1][0], points[i+1][1])
         
+        # 当前点
         painter.setBrush(QBrush(QColor("#e74c3c")))
         painter.setPen(Qt.NoPen)
         if points:
@@ -550,26 +678,54 @@ class StrategyMatrixWidget(QWidget):
         painter.drawText(int(x), int(y), int(cell_w), int(cell_h), Qt.AlignCenter, hand)
     
     def _draw_range_cell(self, painter, x, y, cell_w, cell_h, hand, freq):
-        if self.selected_action and freq > 0:
-            bg_color = get_action_color(self.selected_action)
-            if freq < 1.0:
-                bg_color = QColor(int(bg_color.red() * freq + 42 * (1 - freq)),
-                                 int(bg_color.green() * freq + 42 * (1 - freq)),
-                                 int(bg_color.blue() * freq + 42 * (1 - freq)))
+        """绘制 range 单元格，用颜色深浅表示权重"""
+        # 保存当前字体
+        normal_font = QFont("Arial", max(7, int(min(cell_w, cell_h) / 4)))
+        
+        if freq <= 0:
+            # 不在 range 内
+            bg_color = QColor("#2a2a2a")
+            text_color = QColor("#666666")
         else:
-            if freq <= 0:
-                bg_color = QColor("#2a2a2a")
-            elif freq < 0.5:
-                bg_color = QColor("#5a6a4a")
+            # 在 range 内，用颜色深浅表示权重
+            if self.selected_action:
+                base_color = get_action_color(self.selected_action)
             else:
-                bg_color = QColor("#3a9a3a")
+                base_color = QColor("#27ae60")  # 绿色
+            
+            # 根据 freq 调整颜色深浅（freq 越高颜色越深）
+            intensity = min(1.0, freq)  # 限制在 0-1
+            
+            # 混合颜色：freq=0 时是深灰，freq=1 时是基础色
+            dark = QColor("#2a2a2a")
+            r = int(dark.red() * (1 - intensity) + base_color.red() * intensity)
+            g = int(dark.green() * (1 - intensity) + base_color.green() * intensity)
+            b = int(dark.blue() * (1 - intensity) + base_color.blue() * intensity)
+            bg_color = QColor(r, g, b)
+            text_color = QColor("#ffffff")
         
         painter.fillRect(int(x), int(y), int(cell_w), int(cell_h), bg_color)
         painter.setPen(QPen(QColor("#3a3a3a"), 1))
         painter.drawRect(int(x), int(y), int(cell_w), int(cell_h))
         
-        painter.setPen(QColor("#ffffff") if freq > 0 else QColor("#666666"))
-        painter.drawText(int(x), int(y), int(cell_w), int(cell_h), Qt.AlignCenter, hand)
+        # 显示 hand 名称（使用正常字体）
+        painter.setFont(normal_font)
+        painter.setPen(text_color)
+        
+        # 如果有显著权重差异，显示 hand + 百分比
+        if freq > 0 and freq < 0.99:
+            # 上半部分显示 hand
+            painter.drawText(int(x), int(y), int(cell_w), int(cell_h * 0.6), Qt.AlignCenter, hand)
+            # 下半部分显示百分比（小字体）
+            small_font = QFont("Arial", max(5, int(min(cell_w, cell_h) / 5)))
+            painter.setFont(small_font)
+            painter.setPen(QColor("#cccccc"))
+            painter.drawText(int(x), int(y + cell_h * 0.5), int(cell_w), int(cell_h * 0.5), 
+                           Qt.AlignCenter, f"{freq*100:.0f}%")
+            # 恢复字体
+            painter.setFont(normal_font)
+        else:
+            painter.drawText(int(x), int(y), int(cell_w), int(cell_h), Qt.AlignCenter, hand)
     
     def mouseMoveEvent(self, event):
         cell_w = self.width() / 13
@@ -605,6 +761,14 @@ class StrategyMatrixWidget(QWidget):
 class ResultsPage(QWidget):
     """Solver Results 页面"""
     continue_solving = Signal()
+    # Signal: (new_board, oop_range, ip_range, pot_size, street_name)
+    continue_to_next_street = Signal(list, object, object, float, str)
+    
+    # 扑克牌等级和花色
+    RANKS = ['A', 'K', 'Q', 'J', 'T', '9', '8', '7', '6', '5', '4', '3', '2']
+    SUITS = ['s', 'h', 'd', 'c']  # spades, hearts, diamonds, clubs
+    SUIT_SYMBOLS = {'s': '♠', 'h': '♥', 'd': '♦', 'c': '♣'}
+    SUIT_COLORS = {'s': '#1a1a1a', 'h': '#e74c3c', 'd': '#3498db', 'c': '#27ae60'}
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -626,6 +790,8 @@ class ResultsPage(QWidget):
         self.iterations = 0
         self.equity_history = []  # [(action_label, oop_eq, ip_eq), ...]
         self._hand_equity_cache = {}
+        self.pot_size = 10.0  # 当前底池大小
+        self.selected_next_card = None  # 选择的下一张牌
         self.init_ui()
     
     def init_ui(self):
@@ -762,6 +928,61 @@ class ResultsPage(QWidget):
         
         left_layout.addWidget(self.action_section)
         
+        # Next Street Section (Turn/River)
+        self.next_street_section = QFrame()
+        self.next_street_section.setStyleSheet("background-color: #1e3a1e; border-radius: 6px; padding: 8px;")
+        next_street_layout = QVBoxLayout(self.next_street_section)
+        next_street_layout.setContentsMargins(8, 8, 8, 8)
+        next_street_layout.setSpacing(8)
+        
+        self.next_street_label = QLabel("🃏 Continue to Turn")
+        self.next_street_label.setStyleSheet("color: #27ae60; font-size: 11px; font-weight: bold;")
+        next_street_layout.addWidget(self.next_street_label)
+        
+        self.next_street_info = QLabel("Select next card:")
+        self.next_street_info.setStyleSheet("color: #aaaaaa; font-size: 10px;")
+        next_street_layout.addWidget(self.next_street_info)
+        
+        # 警告：单街近似
+        approx_warning = QLabel("⚠️ Note: Single-street approximation\n(Not full multi-street GTO)")
+        approx_warning.setStyleSheet("color: #ffaa00; font-size: 9px;")
+        approx_warning.setWordWrap(True)
+        next_street_layout.addWidget(approx_warning)
+        
+        # Card selector grid
+        self.card_selector_frame = QFrame()
+        self.card_selector_layout = QGridLayout(self.card_selector_frame)
+        self.card_selector_layout.setContentsMargins(0, 0, 0, 0)
+        self.card_selector_layout.setSpacing(2)
+        next_street_layout.addWidget(self.card_selector_frame)
+        
+        # Selected card display
+        self.selected_card_label = QLabel("Selected: -")
+        self.selected_card_label.setStyleSheet("color: white; font-size: 11px; font-weight: bold;")
+        next_street_layout.addWidget(self.selected_card_label)
+        
+        # Confirm button
+        self.confirm_next_street_btn = QPushButton("▶ Solve Next Street")
+        self.confirm_next_street_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #27ae60;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                font-size: 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #2ecc71; }
+            QPushButton:disabled { background-color: #1a3a1a; color: #555555; }
+        """)
+        self.confirm_next_street_btn.clicked.connect(self._on_confirm_next_street)
+        self.confirm_next_street_btn.setEnabled(False)
+        next_street_layout.addWidget(self.confirm_next_street_btn)
+        
+        self.next_street_section.setVisible(False)
+        left_layout.addWidget(self.next_street_section)
+        
         self.stats_label = QLabel("")
         self.stats_label.setStyleSheet("color: #aaaaaa; font-size: 9px;")
         self.stats_label.setWordWrap(True)
@@ -897,7 +1118,7 @@ class ResultsPage(QWidget):
         layout.addWidget(right_scroll)
     
     def set_data(self, engine, game_tree, board, oop_range, ip_range, iterations: int,
-                 oop_position: str = "OOP", ip_position: str = "IP"):
+                 oop_position: str = "OOP", ip_position: str = "IP", pot_size: float = 10.0):
         self.engine = engine
         self.game_tree = game_tree
         self.current_node = game_tree
@@ -909,18 +1130,34 @@ class ResultsPage(QWidget):
         self.oop_position = oop_position
         self.ip_position = ip_position
         self.iterations = iterations
+        self.pot_size = pot_size
         self.action_sequence = []
         self.node_history = []
         self.selected_action_filter = None
         self.current_view = "strategy"
         self.current_view_player = "OOP" if game_tree.player == 0 else "IP"
+        self.selected_next_card = None
         
         self._hand_equity_cache = {}
         
-        self.board_display.setText(f"Board: {' '.join(str(c) for c in board)}")
+        # 确定当前街道
+        board_len = len(board)
+        if board_len == 3:
+            street = "Flop"
+        elif board_len == 4:
+            street = "Turn"
+        else:
+            street = "River"
         
-        avg_regret = self._calculate_avg_regret()
-        self.conv_chart.set_data(iterations, avg_regret)
+        self.board_display.setText(f"Board ({street}): {' '.join(str(c) for c in board)}")
+        
+        # 使用真实历史数据
+        if hasattr(engine, '_iteration_regrets') and engine._iteration_regrets:
+            self.conv_chart.set_history(engine._iteration_regrets)
+            avg_regret = engine.get_average_regret()
+        else:
+            avg_regret = self._calculate_avg_regret()
+            self.conv_chart.set_data(iterations, avg_regret)
         
         if avg_regret < 0.01:
             self.conv_hint.setText("✓ Well converged")
@@ -1028,15 +1265,248 @@ class ResultsPage(QWidget):
         
         self.back_btn.setEnabled(len(self.action_sequence) > 0)
         
-        is_terminal = self.current_node.is_terminal
+        is_terminal = self.current_node.is_terminal or getattr(self.current_node, 'node_type', 'player') == "terminal"
+        is_chance = getattr(self.current_node, 'node_type', 'player') == "chance"
         
         # Terminal 节点时隐藏 Hand Strategy
-        self.hand_strat_frame.setVisible(not is_terminal)
+        self.hand_strat_frame.setVisible(not is_terminal and not is_chance)
         
         if is_terminal:
             self._update_terminal_view()
+        elif is_chance:
+            self._update_chance_node_view()
         else:
             self._update_non_terminal_view()
+    
+    def _update_chance_node_view(self):
+        """更新 Chance Node 视图 - 显示牌选择器"""
+        # 隐藏普通策略相关区域
+        self.strategy_section.setVisible(False)
+        self.filter_section.setVisible(False)
+        self.action_section.setVisible(False)
+        
+        # 显示 range 区域用于展示当前 board
+        self.range_label.setText("🎲 Chance Node - Select Next Card")
+        self.range_section.setVisible(True)
+        
+        # 清空之前的 range 按钮
+        self._clear_layout(self.range_buttons_layout)
+        
+        # 显示当前 board
+        current_street = self.current_node.state.street
+        board_str = " ".join(str(c) for c in self.current_node.state.board)
+        info_label = QLabel(f"Current Board ({current_street}): {board_str}")
+        info_label.setStyleSheet("color: #27ae60; font-size: 11px; font-weight: bold;")
+        self.range_buttons_layout.addWidget(info_label)
+        
+        # 显示下一条街的牌选择
+        self.next_street_section.setVisible(True)
+        
+        # 确定下一条街
+        if current_street == "flop":
+            next_street = "Turn"
+        elif current_street == "turn":
+            next_street = "River"
+        else:
+            next_street = "?"
+        
+        self.next_street_label.setText(f"🃏 Select {next_street} Card")
+        self.confirm_next_street_btn.setText(f"▶ Go to {next_street}")
+        
+        # 创建牌选择器，使用 Chance Node 的可用牌
+        self._create_chance_card_selector()
+        
+        # Chance Node 没有策略，清空矩阵显示
+        self.strategy_matrix.clear()
+        self.matrix_title.setText("Select a card to continue")
+        self.stats_label.setText("")
+    
+    def _create_chance_card_selector(self):
+        """为 Chance Node 创建牌选择器 - 显示所有 47 张可用牌"""
+        self._clear_layout(self.card_selector_layout)
+        
+        # 获取 Chance Node 的 cluster 信息
+        chance_children = getattr(self.current_node, 'chance_children', None)
+        if not chance_children:
+            return
+        
+        # 获取已使用的牌（board 上的牌）
+        used_cards = set(str(card) for card in self.current_node.state.board)
+        
+        # 构建 card -> cluster 映射
+        self._card_to_cluster = {}
+        for representative, child in chance_children.items():
+            # 假设每个 cluster 包含相似的牌，我们需要从 game_tree 获取完整映射
+            # 这里简化：把代表牌映射到自己
+            self._card_to_cluster[str(representative)] = representative
+        
+        self._card_buttons = {}
+        
+        # 显示所有 52 张牌（排除已用的）
+        idx = 0
+        for rank in self.RANKS:
+            for suit in self.SUITS:
+                card_str = f"{rank}{suit}"
+                
+                if card_str in used_cards:
+                    continue  # 跳过已用的牌
+                
+                btn = QPushButton(f"{rank}{self.SUIT_SYMBOLS.get(suit, suit)}")
+                btn.setFixedSize(32, 26)
+                btn.setCheckable(True)
+                
+                # 找到这张牌属于哪个 cluster
+                cluster_key = self._find_cluster_for_card(card_str, chance_children)
+                
+                suit_color = self.SUIT_COLORS.get(suit, '#ffffff')
+                btn.setStyleSheet(f"""
+                    QPushButton {{ 
+                        background-color: #f0f0f0; 
+                        color: {suit_color}; 
+                        border: none; 
+                        border-radius: 3px; 
+                        font-size: 10px; 
+                        font-weight: bold; 
+                    }}
+                    QPushButton:hover {{ 
+                        background-color: #ffffff; 
+                        border: 2px solid #27ae60; 
+                    }}
+                    QPushButton:checked {{ 
+                        background-color: #27ae60; 
+                        color: white; 
+                    }}
+                """)
+                btn.clicked.connect(lambda checked, c=card_str, k=cluster_key: self._on_chance_card_selected_full(c, k))
+                
+                self._card_buttons[card_str] = btn
+                
+                # 每行显示 4 张牌（按花色）
+                row = self.RANKS.index(rank)
+                col = self.SUITS.index(suit)
+                self.card_selector_layout.addWidget(btn, row, col)
+                idx += 1
+        
+        # 提示文字
+        hint = QLabel(f"({len(chance_children)} clusters, {idx} cards available)")
+        hint.setStyleSheet("color: #888888; font-size: 9px;")
+        self.card_selector_layout.addWidget(hint, len(self.RANKS), 0, 1, 4)
+    
+    def _find_cluster_for_card(self, card_str: str, chance_children: dict):
+        """找到一张牌属于哪个 cluster
+        
+        新逻辑：按 rank 分组，每个 rank 一个 bucket
+        找到与选择的牌相同 rank 的 representative
+        """
+        rank_map = {'A': 14, 'K': 13, 'Q': 12, 'J': 11, 'T': 10, 
+                    '9': 9, '8': 8, '7': 7, '6': 6, '5': 5, '4': 4, '3': 3, '2': 2}
+        
+        # 解析牌的 rank
+        rank_char = card_str[0]
+        target_rank = rank_map.get(rank_char, 2)
+        
+        # 找到相同 rank 的 cluster
+        for representative in chance_children.keys():
+            if representative.rank == target_rank:
+                return representative
+        
+        # 如果没找到（不应该发生），返回第一个
+        return list(chance_children.keys())[0] if chance_children else None
+    
+    def _on_chance_card_selected_full(self, card_str: str, cluster_key):
+        """选择具体的牌，映射到对应的 cluster"""
+        # 取消其他选择
+        for c, btn in self._card_buttons.items():
+            if c != card_str:
+                btn.setChecked(False)
+        
+        if self._card_buttons[card_str].isChecked():
+            self.selected_next_card = card_str
+            self._selected_cluster = cluster_key
+            rank = card_str[0]
+            suit = card_str[1]
+            self.selected_card_label.setText(f"Selected: {rank}{self.SUIT_SYMBOLS.get(suit, suit)}")
+            self.confirm_next_street_btn.setEnabled(True)
+        else:
+            self.selected_next_card = None
+            self._selected_cluster = None
+            self.selected_card_label.setText("Selected: -")
+            self.confirm_next_street_btn.setEnabled(False)
+    
+    def _on_chance_card_selected(self, card):
+        """选择 Chance Node 的牌"""
+        # 取消其他选择
+        for c, btn in self._card_buttons.items():
+            if c != card:
+                btn.setChecked(False)
+        
+        if self._card_buttons[card].isChecked():
+            self.selected_next_card = str(card)
+            self.selected_card_label.setText(f"Selected: {card}")
+            self.confirm_next_street_btn.setEnabled(True)
+        else:
+            self.selected_next_card = None
+            self.selected_card_label.setText("Selected: -")
+            self.confirm_next_street_btn.setEnabled(False)
+    
+    def _on_confirm_chance_card(self):
+        """确认 Chance Node 的牌选择，导航到对应子节点"""
+        if not self.selected_next_card:
+            return
+        
+        chance_children = getattr(self.current_node, 'chance_children', None)
+        if not chance_children:
+            return
+        
+        # 使用 cluster key 导航（如果有）
+        selected_card_obj = getattr(self, '_selected_cluster', None)
+        
+        # 如果没有 cluster key，尝试直接匹配
+        if selected_card_obj is None:
+            for card in chance_children.keys():
+                if str(card) == self.selected_next_card:
+                    selected_card_obj = card
+                    break
+        
+        if selected_card_obj and selected_card_obj in chance_children:
+            # 解析用户实际选择的卡
+            from solver.card_utils import parse_card
+            actual_card = parse_card(self.selected_next_card)
+            
+            # 保存当前状态（包括 board）
+            self.node_history.append({
+                'node': self.current_node,
+                'oop_range': deepcopy(self.current_oop_range),
+                'ip_range': deepcopy(self.current_ip_range),
+                'board': list(self.board),  # 保存当前 board
+            })
+            
+            # 导航到子节点
+            self.action_sequence.append(("CARD", f"[{self.selected_next_card}]"))
+            self.current_node = chance_children[selected_card_obj]
+            
+            # 更新 board：使用用户实际选择的卡（而不是 cluster 代表卡）
+            # 这样 blocker 计算更准确
+            previous_board = self.node_history[-1]['board']
+            self.board = previous_board + [actual_card]
+            
+            street = self.current_node.state.street.capitalize()
+            self.board_display.setText(f"Board ({street}): {' '.join(str(c) for c in self.board)}")
+            
+            # 重新计算 equity
+            oop_eq = self._calculate_equity()
+            self.equity_history.append((f"+{self.selected_next_card}", oop_eq, 100 - oop_eq))
+            self.equity_line_chart.set_history(self.equity_history, self.oop_position, self.ip_position)
+            
+            # 重置选择状态
+            self.selected_next_card = None
+            self._selected_cluster = None
+            
+            # 隐藏牌选择界面
+            self.next_street_section.setVisible(False)
+            
+            # 更新 UI
+            self._update_ui()
     
     def _update_terminal_view(self):
         self.strategy_section.setVisible(False)
@@ -1084,6 +1554,134 @@ class ResultsPage(QWidget):
             self.strategy_matrix.clear()
             self.matrix_title.setText("Both players folded")
             self.stats_label.setText("")
+        
+        # 在多街模式下，terminal node 就是最终节点（fold 或 River showdown）
+        # 不需要显示"Continue to Turn"（那是 Chance Node 的职责）
+        self.next_street_section.setVisible(False)
+    
+    def _update_next_street_section(self, can_continue: bool):
+        """更新下一条街选择区域"""
+        board_len = len(self.board)
+        
+        # 只有双方都有 range 且不是 River 才能继续
+        if not can_continue or board_len >= 5:
+            self.next_street_section.setVisible(False)
+            return
+        
+        # 确定下一条街
+        if board_len == 3:
+            next_street = "Turn"
+            self.next_street_label.setText("🃏 Continue to Turn")
+        elif board_len == 4:
+            next_street = "River"
+            self.next_street_label.setText("🃏 Continue to River")
+        else:
+            self.next_street_section.setVisible(False)
+            return
+        
+        self.next_street_section.setVisible(True)
+        self.selected_next_card = None
+        self.selected_card_label.setText("Selected: -")
+        self.confirm_next_street_btn.setEnabled(False)
+        self.confirm_next_street_btn.setText(f"▶ Solve {next_street}")
+        
+        # 生成牌选择器
+        self._create_card_selector()
+    
+    def _create_card_selector(self):
+        """创建牌选择器"""
+        # 清空现有选择器
+        self._clear_layout(self.card_selector_layout)
+        
+        # 获取已使用的牌
+        used_cards = set()
+        for card in self.board:
+            used_cards.add(str(card))
+        
+        # 创建按钮
+        self._card_buttons = {}
+        for row, rank in enumerate(self.RANKS):
+            for col, suit in enumerate(self.SUITS):
+                card_str = f"{rank}{suit}"
+                btn = QPushButton(f"{rank}{self.SUIT_SYMBOLS[suit]}")
+                btn.setFixedSize(28, 24)
+                
+                if card_str in used_cards:
+                    # 已使用的牌
+                    btn.setEnabled(False)
+                    btn.setStyleSheet("""
+                        QPushButton {
+                            background-color: #1a1a1a;
+                            color: #333333;
+                            border: none;
+                            border-radius: 3px;
+                            font-size: 10px;
+                        }
+                    """)
+                else:
+                    suit_color = self.SUIT_COLORS[suit]
+                    btn.setStyleSheet(f"""
+                        QPushButton {{
+                            background-color: #f0f0f0;
+                            color: {suit_color};
+                            border: none;
+                            border-radius: 3px;
+                            font-size: 10px;
+                            font-weight: bold;
+                        }}
+                        QPushButton:hover {{ background-color: #ffffff; border: 2px solid #27ae60; }}
+                        QPushButton:checked {{ background-color: #27ae60; color: white; }}
+                    """)
+                    btn.setCheckable(True)
+                    btn.clicked.connect(lambda checked, c=card_str: self._on_card_selected(c))
+                
+                self._card_buttons[card_str] = btn
+                self.card_selector_layout.addWidget(btn, row, col)
+    
+    def _on_card_selected(self, card_str: str):
+        """选择一张牌"""
+        # 取消其他选中的牌
+        for c, btn in self._card_buttons.items():
+            if c != card_str and btn.isEnabled():
+                btn.setChecked(False)
+        
+        if self._card_buttons[card_str].isChecked():
+            self.selected_next_card = card_str
+            rank = card_str[0]
+            suit = card_str[1]
+            self.selected_card_label.setText(f"Selected: {rank}{self.SUIT_SYMBOLS[suit]}")
+            self.confirm_next_street_btn.setEnabled(True)
+        else:
+            self.selected_next_card = None
+            self.selected_card_label.setText("Selected: -")
+            self.confirm_next_street_btn.setEnabled(False)
+    
+    def _on_confirm_next_street(self):
+        """确认继续到下一条街（或导航 Chance Node）"""
+        if not self.selected_next_card:
+            return
+        
+        # 检查当前是否是 Chance Node
+        is_chance = getattr(self.current_node, 'node_type', 'player') == "chance"
+        
+        if is_chance:
+            # 多街模式：在已构建的树中导航
+            self._on_confirm_chance_card()
+        else:
+            # 单街模式：发送 signal 让 solver_page 重新构建树
+            from solver.card_utils import parse_card
+            new_card = parse_card(self.selected_next_card)
+            new_board = list(self.board) + [new_card]
+            
+            street_name = "Turn" if len(new_board) == 4 else "River"
+            
+            self.continue_to_next_street.emit(
+                new_board,
+                self.current_oop_range,
+                self.current_ip_range,
+                self.pot_size,
+                street_name
+            )
     
     def _show_terminal_range(self, player):
         self.current_view_player = player
@@ -1095,15 +1693,51 @@ class ResultsPage(QWidget):
         
         position = self.oop_position if player == "OOP" else self.ip_position
         range_obj = self.current_oop_range if player == "OOP" else self.current_ip_range
-        range_data = {h: w for h, w in range_obj.weights.items() if w > 0}
+        
+        # 获取所有权重，并考虑 board blocker
+        from solver.card_utils import get_all_combos, cards_conflict
+        all_combos = get_all_combos()
+        
+        raw_weights = {}
+        for hand, weight in range_obj.weights.items():
+            if weight <= 0:
+                continue
+            
+            # 检查这个 hand 有多少 valid combos（不与 board 冲突）
+            hand_combos = all_combos.get(hand, [])
+            valid_combos = [c for c in hand_combos if not cards_conflict(list(c), self.board)]
+            
+            if not valid_combos:
+                # 所有 combos 都被 block，权重为 0
+                raw_weights[hand] = 0.0
+            else:
+                # 按 valid combo 比例调整权重
+                ratio = len(valid_combos) / len(hand_combos) if hand_combos else 0
+                raw_weights[hand] = weight * ratio
+        
+        # 归一化权重（相对于最大值），便于显示
+        max_weight = max(raw_weights.values()) if raw_weights else 1.0
+        if max_weight > 0:
+            range_data = {h: w / max_weight for h, w in raw_weights.items()}
+        else:
+            range_data = raw_weights
         
         self.strategy_matrix.set_player_range(range_data)
         self.strategy_matrix.set_range(range_data)
         self.matrix_title.setText(f"{player} ({position}) Range [Terminal]")
         
         self._clear_layout(self.legend_layout)
-        total = sum(self._get_hand_combos(h) * w for h, w in range_data.items())
-        self.stats_label.setText(f"Total: {total:.0f} combos ({total/1326*100:.1f}%)")
+        
+        # 统计：计算有效 combos
+        total_combos = 0.0
+        for hand, weight in raw_weights.items():
+            if weight > 0:
+                hand_combos = all_combos.get(hand, [])
+                valid_combos = [c for c in hand_combos if not cards_conflict(list(c), self.board)]
+                total_combos += len(valid_combos) * weight
+        
+        hands_in_range = sum(1 for w in raw_weights.values() if w > 0)
+        self.stats_label.setText(f"Total: {total_combos:.0f} combos ({total_combos/1326*100:.1f}%) | {hands_in_range} hands")
     
     def _update_non_terminal_view(self):
         current_player = "OOP" if self.current_node.player == 0 else "IP"
@@ -1321,7 +1955,20 @@ class ResultsPage(QWidget):
         if not self.engine:
             return
         
-        hand_strategy = self.engine.get_hand_strategy(self.current_node)
+        from solver.card_utils import get_all_combos, cards_conflict
+        all_combos = get_all_combos()
+        
+        raw_hand_strategy = self.engine.get_hand_strategy(self.current_node)
+        
+        # 过滤掉被 board 完全 block 的手牌
+        hand_strategy = {}
+        for hand, strat in raw_hand_strategy.items():
+            hand_combos = all_combos.get(hand, [])
+            valid_combos = [c for c in hand_combos if not cards_conflict(list(c), self.board)]
+            
+            if valid_combos:
+                # 有 valid combo，保留策略
+                hand_strategy[hand] = strat
         
         all_actions = set()
         for strat in hand_strategy.values():
@@ -1343,17 +1990,34 @@ class ResultsPage(QWidget):
         self._update_stats(hand_strategy, actions)
     
     def _show_range(self, player):
+        from solver.card_utils import get_all_combos, cards_conflict
+        all_combos = get_all_combos()
+        
         position = self.oop_position if player == "OOP" else self.ip_position
         range_obj = self.current_oop_range if player == "OOP" else self.current_ip_range
-        range_data = {h: w for h, w in range_obj.weights.items() if w > 0}
+        
+        # 考虑 board blocker
+        range_data = {}
+        total_combos = 0.0
+        
+        for hand, weight in range_obj.weights.items():
+            if weight <= 0:
+                continue
+            
+            hand_combos = all_combos.get(hand, [])
+            valid_combos = [c for c in hand_combos if not cards_conflict(list(c), self.board)]
+            
+            if valid_combos:
+                ratio = len(valid_combos) / len(hand_combos) if hand_combos else 0
+                range_data[hand] = weight * ratio
+                total_combos += len(valid_combos) * weight
         
         self.strategy_matrix.set_player_range(range_data)
         self.strategy_matrix.set_range(range_data)
         self.matrix_title.setText(f"{player} ({position}) Range")
         
         self._clear_layout(self.legend_layout)
-        total = sum(self._get_hand_combos(h) * w for h, w in range_data.items())
-        self.stats_label.setText(f"Total: {total:.0f} combos ({total/1326*100:.1f}%)")
+        self.stats_label.setText(f"Total: {total_combos:.0f} combos ({total_combos/1326*100:.1f}%)")
     
     def _on_filter_action(self, action):
         self.selected_action_filter = action
@@ -1367,11 +2031,12 @@ class ResultsPage(QWidget):
         if action_obj and action_obj in self.current_node.children:
             player = "OOP" if self.current_node.player == 0 else "IP"
             
-            # 保存当前状态用于回退
+            # 保存当前状态用于回退（包括 board）
             self.node_history.append({
                 'node': self.current_node,
                 'oop_range': deepcopy(self.current_oop_range),
                 'ip_range': deepcopy(self.current_ip_range),
+                'board': list(self.board),
             })
             
             # 更新 range
@@ -1400,6 +2065,15 @@ class ResultsPage(QWidget):
             self.current_oop_range = prev_state['oop_range']
             self.current_ip_range = prev_state['ip_range']
             
+            # 恢复 board（优先使用保存的 board，否则使用节点的 board）
+            if 'board' in prev_state:
+                self.board = prev_state['board']
+            else:
+                self.board = self.current_node.state.board
+            
+            street = self.current_node.state.street.capitalize()
+            self.board_display.setText(f"Board ({street}): {' '.join(str(c) for c in self.board)}")
+            
             self.selected_action_filter = None
             self.current_view = "strategy"
             
@@ -1415,6 +2089,11 @@ class ResultsPage(QWidget):
         self.current_ip_range = deepcopy(self.original_ip_range)
         self.selected_action_filter = None
         self.current_view = "strategy"
+        
+        # 重置 board 为初始 board
+        self.board = self.game_tree.state.board
+        street = self.game_tree.state.street.capitalize()
+        self.board_display.setText(f"Board ({street}): {' '.join(str(c) for c in self.board)}")
         
         oop_eq = self._calculate_equity()
         self.equity_history = [("Root", oop_eq, 100 - oop_eq)]
@@ -1484,10 +2163,11 @@ class ResultsPage(QWidget):
     
     def _on_hand_clicked(self, hand, strategy):
         player = self.current_view_player or ("OOP" if self.current_node.player == 0 else "IP")
-        self._calculate_hand_equity(hand, player)
+        self._calculate_combo_equities(hand, player)
         
         # Terminal 节点时只显示 equity，不显示 strategy
-        if not self.current_node.is_terminal and strategy:
+        is_terminal = self.current_node.is_terminal or getattr(self.current_node, 'node_type', 'player') == "terminal"
+        if not is_terminal and strategy:
             total = sum(strategy.values())
             display_strategy = dict(strategy)
             if total < 0.99:
@@ -1496,14 +2176,8 @@ class ResultsPage(QWidget):
         else:
             self.hand_strategy_chart.clear()
     
-    def _calculate_hand_equity(self, hand, player):
-        cache_key = (hand, player, tuple(self.action_sequence) if self.action_sequence else ())
-        
-        if cache_key in self._hand_equity_cache:
-            hand_eq = self._hand_equity_cache[cache_key]
-            self.hand_equity_chart.set_data(hand, hand_eq, player)
-            return
-        
+    def _calculate_combo_equities(self, hand, player):
+        """计算每个 combo 的 equity"""
         try:
             from solver.hand_evaluator import calculate_equity
             from solver.card_utils import get_all_combos, cards_conflict
@@ -1511,41 +2185,61 @@ class ResultsPage(QWidget):
             all_combos = get_all_combos()
             hand_combos = all_combos.get(hand, [])
             
-            if hand_combos:
-                valid_combo = None
-                for combo in hand_combos:
-                    if not cards_conflict(list(combo), self.board):
-                        valid_combo = combo
-                        break
+            if not hand_combos:
+                self.hand_equity_chart.clear()
+                return
+            
+            # 获取对手 range
+            opp_range = self.current_ip_range if player == "OOP" else self.current_oop_range
+            opp_hands = [(h, w) for h, w in opp_range.weights.items() if w > 0]
+            
+            combo_results = []  # [(combo_str, equity, is_valid), ...]
+            
+            for combo in hand_combos:
+                combo_str = "".join(str(c) for c in combo)
                 
-                if valid_combo:
-                    opp_range = self.current_ip_range if player == "OOP" else self.current_oop_range
-                    opp_hands = [(h, w) for h, w in opp_range.weights.items() if w > 0]
-                    
-                    if not opp_hands:
-                        self.hand_equity_chart.set_data(hand, 100.0, player)
-                        return
-                    
-                    total_eq, total_weight = 0.0, 0.0
-                    
-                    for opp_hand, opp_weight in opp_hands:
-                        opp_combos = all_combos.get(opp_hand, [])
-                        if opp_combos:
-                            opp_combo = opp_combos[0]
-                            if not cards_conflict(list(opp_combo), self.board) and not cards_conflict(list(valid_combo), list(opp_combo)):
-                                eq = calculate_equity(list(valid_combo), list(opp_combo), self.board, num_simulations=20)
+                # 检查是否与 board 冲突
+                if cards_conflict(list(combo), self.board):
+                    combo_results.append((combo_str, 0.0, False))
+                    continue
+                
+                # 计算 equity
+                if not opp_hands:
+                    combo_results.append((combo_str, 100.0, True))
+                    continue
+                
+                total_eq, total_weight = 0.0, 0.0
+                
+                # 采样对手手牌计算
+                sample_opps = opp_hands[:10]  # 限制采样数量
+                
+                for opp_hand, opp_weight in sample_opps:
+                    opp_combos = all_combos.get(opp_hand, [])
+                    if opp_combos:
+                        for opp_combo in opp_combos[:2]:  # 每个 hand 最多采样 2 个 combo
+                            if not cards_conflict(list(opp_combo), self.board) and not cards_conflict(list(combo), list(opp_combo)):
+                                eq = calculate_equity(list(combo), list(opp_combo), self.board, num_simulations=10)
                                 total_eq += eq * opp_weight
                                 total_weight += opp_weight
-                    
-                    if total_weight > 0:
-                        hand_eq = total_eq / total_weight * 100
-                        self._hand_equity_cache[cache_key] = hand_eq
-                        self.hand_equity_chart.set_data(hand, hand_eq, player)
-                        return
-        except Exception:
-            pass
-        
-        self.hand_equity_chart.clear()
+                                break
+                
+                if total_weight > 0:
+                    combo_eq = total_eq / total_weight * 100
+                else:
+                    combo_eq = 50.0
+                
+                combo_results.append((combo_str, combo_eq, True))
+            
+            # 更新显示
+            self.hand_equity_chart.set_combo_data(hand, combo_results, player)
+            
+        except Exception as e:
+            print(f"[Equity] Error calculating combo equities: {e}")
+            self.hand_equity_chart.clear()
+    
+    def _calculate_hand_equity(self, hand, player):
+        """旧接口，兼容"""
+        self._calculate_combo_equities(hand, player)
     
     def _get_hand_combos(self, hand):
         if len(hand) == 2:
@@ -1553,3 +2247,4 @@ class ResultsPage(QWidget):
         elif hand.endswith('s'):
             return 4
         return 12
+

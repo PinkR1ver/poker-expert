@@ -1,0 +1,82 @@
+---
+description: "Project background, goals, current status, and key concepts"
+alwaysApply: false
+---
+
+# Project Context
+
+## 项目概述
+
+**Poker Expert** 是一个基于 Python 和 PySide6 开发的德州扑克手牌追踪与分析软件，专门用于解析和分析 GGPoker 平台的手牌历史记录。
+
+## 项目目标
+
+1. **数据导入与存储**：解析 GGPoker 手牌历史文件（.txt），提取关键信息并存储到 SQLite 数据库
+2. **数据可视化**：提供盈亏曲线、多条 EV / Showdown / Non-Showdown 曲线
+3. **GTO 分析**：Preflop Range 查表 + Postflop Solver
+
+## 当前状态
+
+### 已完成功能
+- ✅ GGPoker 手牌历史文件解析
+- ✅ SQLite 数据库存储与管理
+- ✅ Dashboard 页面：多曲线图表
+- ✅ Sessions 页面：Session 统计 + 手牌详情 + 双击 Replay
+- ✅ Import 页面：文件导入，重复检测
+- ✅ Report 页面：Position Analysis 报告
+- ✅ Replay 页面：手牌回放功能
+- ✅ **Preflop Range 页面**：GTO Range 查表（50bb/100bb/200bb）
+- ✅ **Leak Analyze 页面**：Preflop Range Check
+- ✅ **Postflop Solver 页面**：
+  - 多步骤向导：Range → Settings → Solve → Results
+  - 完整多街 Solver（Flop → Turn → River）
+  - Discounted CFR 算法
+  - Game Tree 导航 + Range 过滤
+  - Equity/Convergence 图表
+
+### Solver 性能说明
+
+当前优化配置（为可用性牺牲精度）：
+| 参数 | 当前值 |
+|------|--------|
+| Card Buckets | 按 rank 分类 |
+| Max Raises | 2/街 |
+| CFR 采样 | 动态 5-12 combos |
+| Equity 采样 | 4 对手，2 模拟 |
+
+## 技术栈
+
+- **语言**: Python 3.11+
+- **GUI 框架**: PySide6 (Qt for Python)
+- **数据库**: SQLite3
+- **数据可视化**: Matplotlib
+- **环境管理**: Conda
+
+## 项目结构
+
+```
+poker-expert/
+├── main.py                 # 应用入口
+├── poker_parser.py         # 手牌历史解析器
+├── db_manager.py           # 数据库管理
+├── equity_calculator.py    # All-in EV 计算
+├── solver/                 # Postflop Solver 模块
+│   ├── data_types.py       # 核心数据结构
+│   ├── game_tree.py        # Game Tree 构建器
+│   ├── cfr_engine.py       # CFR 算法
+│   ├── card_utils.py       # 牌工具函数
+│   └── hand_evaluator.py   # 手牌评估
+├── gui/                    # GUI 模块
+│   ├── main_window.py
+│   ├── pages/              # 页面模块
+│   └── widgets/            # 自定义 widgets
+└── assets/range/           # GTO Range 数据
+```
+
+## 关键概念
+
+- **Hero**: 玩家自己
+- **GTO**: Game Theory Optimal，博弈论最优策略
+- **CFR**: Counterfactual Regret Minimization，反事实后悔最小化算法
+- **bb/100**: 每百手大盲盈利
+- **OOP/IP**: Out of Position / In Position

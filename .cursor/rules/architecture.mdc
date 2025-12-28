@@ -1,0 +1,121 @@
+---
+description: "System architecture, module design, data flow, and technical implementation details"
+alwaysApply: false
+---
+
+# Architecture
+
+## 整体架构
+
+采用 **MVC-like 架构**，分为数据层、业务逻辑层和表现层：
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│                 Presentation Layer (GUI)                       │
+│  ┌──────────┐ ┌──────────┐ ┌────────┐ ┌────────┐ ┌──────────┐ │
+│  │Dashboard │ │CashGame │ │ Import │ │ Report │ │  Replay  │ │
+│  └──────────┘ └──────────┘ └────────┘ └────────┘ └──────────┘ │
+└────────────────────────────────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────────┐
+│        Business Logic Layer             │
+│  ┌──────────────┐  ┌─────────────────┐ │
+│  │PokerParser   │  │EquityCalculator │ │
+│  └──────────────┘  └─────────────────┘ │
+└─────────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────────┐
+│           Data Layer                     │
+│  ┌──────────────┐                       │
+│  │  DBManager   │                       │
+│  │  (SQLite)    │                       │
+│  └──────────────┘                       │
+└─────────────────────────────────────────┘
+```
+
+## 核心模块
+
+### 1. 数据解析层 (`poker_parser.py`)
+
+**职责**: 解析 GGPoker 手牌历史文本文件
+
+**核心类**:
+- `PokerHand`: 手牌数据模型
+  - 基础信息：hand_id, date_time, blinds, game_type
+  - 盈利数据：net_profit, rake, total_pot, insurance_premium
+  - 分析数据：showdown_winnings, non_showdown_winnings, all_in_ev
+
+### 2. 数据存储层 (`db_manager.py`)
+
+**职责**: SQLite 数据库操作
+
+**核心方法**:
+- `create_tables()`: 创建表结构，支持自动迁移
+- `add_hand(hand)`: 添加手牌，返回 True（新）或 False（重复）
+- `get_all_hands()`: 获取所有手牌
+- `get_graph_data(start_date, end_date)`: 获取图表数据
+
+### 3. Postflop Solver 模块
+
+**核心数据结构** (`solver/data_types.py`):
+```python
+@dataclass
+class Node:
+    state: GameState
+    player: int  # 0=OOP, 1=IP, -1=chance
+    actions: List[Action]
+    children: Dict[Action, Node]
+    is_terminal: bool = False
+    node_type: str = "player"  # "player", "chance", "terminal"
+    chance_cards: Optional[List[Card]] = None
+    chance_children: Optional[Dict[Card, Node]] = None
+```
+
+**Game Tree 构建** (`solver/game_tree.py`):
+- Player Node: 玩家决策节点
+- Chance Node: 发牌节点（Turn/River）
+- Terminal Node: 游戏结束节点
+- Card Abstraction: 按 rank 分类减少树规模
+
+**CFR 算法** (`solver/cfr_engine.py`):
+- Discounted CFR (DCFR) 手牌级别策略
+- Player Node: 标准 CFR 更新
+- Chance Node: 按概率加权 EV
+- Terminal Node: 计算 showdown equity
+
+### 4. 表现层 (GUI)
+
+**页面模块** (`gui/pages/`):
+- `dashboard.py`: Dashboard 页面
+- `cash_game.py`: CashGamePage, CashGameGraphPage
+- `import_page.py`: ImportPage
+- `replay.py`: ReplayPage
+- `preflop_range.py`: GTO Range 查表
+- `leak_analyze/`: Leak 分析模块
+- `solver/`: Postflop Solver 模块
+- `reports/`: 报告模块
+
+## 数据流
+
+### 导入流程
+```
+用户选择文件 → ImportWorker (QThread) → PokerParser → DBManager → data_changed 信号 → 页面刷新
+```
+
+### Solver 流程
+```
+Range 设置 → Settings → GameTreeBuilder 构建树 → DCFREngine.solve() → Results 页面导航
+```
+
+## 线程模型
+
+- **主线程**: GUI 事件循环
+- **工作线程**: ImportWorker, SolverWorker (QThread)
+  - 通过 Signal 与主线程通信
+  - 每个线程独立的 DBManager 实例
+
+## 设计模式
+
+- **单例模式**: DBManager（每个线程一个实例）
+- **观察者模式**: Qt Signal/Slot 机制
+- **工厂模式**: parse_hand() 创建 PokerHand 对象

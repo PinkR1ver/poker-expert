@@ -179,3 +179,4 @@ class ResultsView(QWidget):
         self.details_text.clear()
         self.hide_progress()
 
+

@@ -89,11 +89,16 @@ class Action:
 class Node:
     """Game tree 节点"""
     state: GameState
-    player: int  # 0=OOP, 1=IP
+    player: int  # 0=OOP, 1=IP, -1=chance
     actions: List[Action]
     children: Dict[Action, 'Node']
     is_terminal: bool = False
     ev: Optional[float] = None  # 该节点的 EV（对于 terminal node）
+    node_type: str = "player"  # "player", "chance", "terminal"
+    
+    # Chance node 专用字段
+    chance_cards: Optional[List[Card]] = None  # 可能的牌
+    chance_children: Optional[Dict[Card, 'Node']] = None  # card -> child node
     
     def __hash__(self):
         # 使用 state 的关键信息作为 hash
@@ -104,6 +109,8 @@ class Node:
             tuple(self.state.stacks),
             self.state.street,
             self.state.to_call,
-            board_str
+            board_str,
+            self.node_type
         ))
+
 

@@ -569,3 +569,4 @@ class PositionAnalysisReport(QWidget):
         self.hands_tree.setColumnWidth(3, 100)
         self.hands_tree.setColumnWidth(4, 80)
 
+

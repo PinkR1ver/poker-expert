@@ -1,0 +1,62 @@
+---
+description: "Glossary of poker terms, data analysis terminology, and technical concepts"
+alwaysApply: false
+---
+
+# Glossary
+
+## 扑克术语
+
+### 基础概念
+- **Hero**: 玩家自己，手牌历史记录中的主角
+- **Villain**: 对手玩家
+- **Street**: Preflop → Flop → Turn → River
+- **Showdown**: 摊牌
+- **Pot**: 底池
+- **Rake**: 抽水
+
+### 位置术语
+- **BTN**: Button，按钮位
+- **SB/BB**: Small Blind / Big Blind
+- **CO**: Cutoff
+- **MP**: Middle Position
+- **EP**: Early Position
+
+### 动作术语
+- **Fold/Check/Call/Bet/Raise/All-in**
+
+## 数据分析术语
+
+### 盈利指标
+- **Net Won**: 净盈利
+- **bb/100**: 每百手大盲盈利
+- **All-in EV**: 全下期望值
+- **Showdown Won / Non-Showdown Won**
+
+### 统计指标
+- **VPIP**: 主动入池率
+- **PFR**: 翻牌前加注率
+- **3Bet**: 三倍加注率
+- **WTSD%**: 摊牌率
+- **W$SD%**: 摊牌胜率
+- **Agg%**: 激进度
+
+## GTO 术语
+
+- **GTO**: Game Theory Optimal，博弈论最优策略
+- **Range**: 手牌范围
+- **Strategy**: 策略分布
+- **Combos**: 手牌组合数
+- **Frequency**: 行动频率
+- **Mixed Strategy**: 混合策略
+
+## Solver 术语
+
+- **CFR**: Counterfactual Regret Minimization
+- **DCFR**: Discounted CFR
+- **Game Tree**: 游戏决策树
+- **Node Types**: Player / Chance / Terminal
+- **Card Abstraction**: 牌抽象化
+- **OOP/IP**: Out of Position / In Position
+- **Regret**: 后悔值
+- **EV**: Expected Value

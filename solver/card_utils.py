@@ -138,3 +138,4 @@ def is_valid_board(board: list[Card]) -> bool:
     """检查 board 是否有效（无重复）"""
     return len(board) == len(set(board))
 
+

@@ -1591,3 +1591,4 @@ class PreflopRangeCheck(QWidget):
     def refresh_data(self):
         pass
 
+

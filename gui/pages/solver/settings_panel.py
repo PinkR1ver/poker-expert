@@ -149,6 +149,64 @@ class SettingsPanel(QWidget):
         raise_layout.addLayout(raise_grid)
         layout.addWidget(raise_frame)
         
+        # Multi-Street Option
+        multi_street_frame = QFrame()
+        multi_street_frame.setStyleSheet("""
+            QFrame {
+                background-color: #2a3a2a;
+                border-radius: 6px;
+                padding: 8px;
+            }
+        """)
+        multi_street_layout = QVBoxLayout(multi_street_frame)
+        multi_street_layout.setContentsMargins(8, 8, 8, 8)
+        
+        multi_label = QLabel("🎯 Solver Mode")
+        multi_label.setStyleSheet("color: #27ae60; font-size: 12px; font-weight: bold;")
+        multi_street_layout.addWidget(multi_label)
+        
+        self.multi_street_checkbox = QCheckBox("Full Multi-Street GTO")
+        self.multi_street_checkbox.setChecked(True)  # 默认开启完整多街
+        self.multi_street_checkbox.setStyleSheet(checkbox_style)
+        self.multi_street_checkbox.setToolTip(
+            "启用：完整 Flop→Turn→River 计算（慢但准确）\n"
+            "禁用：仅当前街计算（快但近似）"
+        )
+        self.multi_street_checkbox.stateChanged.connect(self._on_settings_changed)
+        multi_street_layout.addWidget(self.multi_street_checkbox)
+        
+        mode_hint = QLabel("⚠️ Multi-street is slower but accurate")
+        mode_hint.setStyleSheet("color: #888888; font-size: 9px;")
+        mode_hint.setWordWrap(True)
+        multi_street_layout.addWidget(mode_hint)
+        
+        layout.addWidget(multi_street_frame)
+        
+        # === 并行计算 ===
+        parallel_frame = QFrame()
+        parallel_frame.setStyleSheet("QFrame { background-color: #252525; border-radius: 5px; padding: 8px; }")
+        parallel_layout = QVBoxLayout(parallel_frame)
+        parallel_layout.setContentsMargins(8, 8, 8, 8)
+        parallel_layout.setSpacing(5)
+        
+        parallel_label = QLabel("⚡ Performance")
+        parallel_label.setStyleSheet("color: #f39c12; font-size: 12px; font-weight: bold;")
+        parallel_layout.addWidget(parallel_label)
+        
+        self.parallel_checkbox = QCheckBox("Parallel Computing")
+        self.parallel_checkbox.setChecked(True)
+        self.parallel_checkbox.setStyleSheet(checkbox_style)
+        self.parallel_checkbox.setToolTip("使用多线程并行计算加速")
+        self.parallel_checkbox.stateChanged.connect(self._on_settings_changed)
+        parallel_layout.addWidget(self.parallel_checkbox)
+        
+        parallel_hint = QLabel("💡 推荐设置：2-3 个 bet sizes, 1-2 个 raise sizes")
+        parallel_hint.setStyleSheet("color: #888888; font-size: 9px;")
+        parallel_hint.setWordWrap(True)
+        parallel_layout.addWidget(parallel_hint)
+        
+        layout.addWidget(parallel_frame)
+        
         layout.addStretch()
     
     def _on_settings_changed(self):
@@ -174,4 +232,13 @@ class SettingsPanel(QWidget):
     def set_pot(self, value: float):
         """设置 pot size"""
         self.pot_input.setValue(value)
+    
+    def is_multi_street(self) -> bool:
+        """是否启用完整多街 Solver"""
+        return self.multi_street_checkbox.isChecked()
+    
+    def is_parallel(self) -> bool:
+        """是否启用并行计算"""
+        return self.parallel_checkbox.isChecked()
+
 

@@ -1269,3 +1269,4 @@ class PreflopRangePage(QWidget):
     def refresh_data(self):
         pass
 
+

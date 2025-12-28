@@ -141,3 +141,4 @@ class LeakAnalyzePage(QWidget):
         if hasattr(current_widget, "refresh_data"):
             current_widget.refresh_data()
 
+

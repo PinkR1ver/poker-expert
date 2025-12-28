@@ -264,3 +264,4 @@ class DashboardPage(QWidget):
         self.figure.subplots_adjust(bottom=0.18)
         self.canvas.draw()
 
+

@@ -22,13 +22,14 @@ class SolverWorker(QThread):
     finished = Signal()  # 完成信号（不传递复杂对象）
     error = Signal(str)
     
-    def __init__(self, game_tree, oop_range, ip_range, board, iterations=1000):
+    def __init__(self, game_tree, oop_range, ip_range, board, iterations=1000, parallel=True):
         super().__init__()
         self.game_tree = game_tree
         self.oop_range = oop_range
         self.ip_range = ip_range
         self.board = board
         self.iterations = iterations
+        self.parallel = parallel
         self.engine = None
         self.strategy = None  # 存储结果，不通过信号传递
     
@@ -44,7 +45,7 @@ class SolverWorker(QThread):
             def callback(iteration, strategy):
                 self.progress.emit(iteration, self.iterations)
             
-            self.engine.solve(self.iterations, callback)
+            self.engine.solve(self.iterations, callback, parallel=self.parallel)
             self.strategy = self.engine.get_strategy()  # 存储在实例变量中
             self.finished.emit()  # 只发送完成信号
         except Exception as e:
@@ -599,7 +600,9 @@ class SettingsPage(QWidget):
             'pot': self.settings_panel.get_pot(),
             'stacks': self.settings_panel.get_stacks(),
             'bet_sizes': self.settings_panel.get_bet_sizes(),
-            'raise_sizes': self.settings_panel.get_raise_sizes()
+            'raise_sizes': self.settings_panel.get_raise_sizes(),
+            'multi_street': self.settings_panel.is_multi_street(),
+            'parallel': self.settings_panel.is_parallel()
         }
     
     def validate(self):
@@ -881,6 +884,9 @@ class SolverPage(QWidget):
         self.stacked.addWidget(self.solve_page)
         self.stacked.addWidget(self.results_page)
         
+        # 连接 ResultsPage 的 continue_to_next_street signal
+        self.results_page.continue_to_next_street.connect(self._on_continue_to_next_street)
+        
         layout.addWidget(self.stacked, 1)
     
     def _update_step_indicator(self, step):
@@ -976,16 +982,27 @@ class SolverPage(QWidget):
         
         # 构建 game tree
         try:
+            is_multi_street = settings.get('multi_street', True)
+            
             builder = GameTreeBuilder(
                 pot=settings['pot'],
                 stacks=settings['stacks'],
                 board=board,
                 bet_sizes=settings['bet_sizes'],
                 raise_sizes=settings['raise_sizes'],
-                max_raises=2,  # 减少 max raises 让 tree 更小
-                street="flop"
+                max_raises=2,
+                street="flop",
+                use_card_abstraction=is_multi_street,  # 多街时使用 card abstraction
+                abstraction_buckets=6  # 将 47 张牌分成 6 个 bucket
             )
             self.game_tree = builder.build_tree()
+            
+            # 显示树的统计信息
+            stats = builder.get_stats()
+            mode_str = "Multi-Street" if is_multi_street else "Single-Street"
+            self.solve_page.results_view.status_label.setText(
+                f"🌲 {mode_str}: {stats['total_nodes']} nodes"
+            )
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to build game tree: {e}")
             return
@@ -1000,12 +1017,14 @@ class SolverPage(QWidget):
         self.solve_page.results_view.start_timer()
         self.solve_page.results_view.set_progress(0, iterations)
         
+        is_parallel = settings.get('parallel', True)
         self.worker = SolverWorker(
             self.game_tree,
             oop_range,
             ip_range,
             board,
-            iterations=iterations
+            iterations=iterations,
+            parallel=is_parallel
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.finished.connect(self._on_solve_finished)
@@ -1038,6 +1057,10 @@ class SolverPage(QWidget):
         # 获取迭代次数
         iterations = self.solve_page.get_iterations()
         
+        # 获取 pot size
+        settings = self.settings_page.get_settings()
+        pot_size = settings['pot']
+        
         # 设置 Results 页面的数据（使用新的 API）
         if self.worker and self.worker.engine:
             self.results_page.set_data(
@@ -1048,7 +1071,8 @@ class SolverPage(QWidget):
                 ip_range=ip_range,
                 iterations=iterations,
                 oop_position=oop_pos,
-                ip_position=ip_pos
+                ip_position=ip_pos,
+                pot_size=pot_size
             )
         
         # 跳转到 Results 页面
@@ -1064,4 +1088,107 @@ class SolverPage(QWidget):
         self.solve_page.results_view.status_label.setText("✗ Error occurred")
         self.solve_page.results_view.status_label.setStyleSheet("color: #ff6666; font-size: 13px; font-weight: bold;")
         QMessageBox.critical(self, "Solver Error", f"An error occurred:\n{error_msg}")
+    
+    def _on_continue_to_next_street(self, new_board: list, oop_range, ip_range, pot_size: float, street_name: str):
+        """继续到下一条街（Turn/River）"""
+        # 确定街道类型
+        if len(new_board) == 4:
+            street = "turn"
+        elif len(new_board) == 5:
+            street = "river"
+        else:
+            QMessageBox.warning(self, "Error", f"Invalid board length: {len(new_board)}")
+            return
+        
+        # 获取当前设置
+        settings = self.settings_page.get_settings()
+        
+        # 构建新的 game tree
+        try:
+            builder = GameTreeBuilder(
+                pot=pot_size,
+                stacks=settings['stacks'],
+                board=new_board,
+                bet_sizes=settings['bet_sizes'],
+                raise_sizes=settings['raise_sizes'],
+                max_raises=2,
+                street=street
+            )
+            self.game_tree = builder.build_tree()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to build game tree for {street_name}: {e}")
+            return
+        
+        # 获取迭代次数
+        iterations = self.solve_page.get_iterations()
+        
+        # 显示进度
+        self.solve_page.results_view.clear()
+        self.solve_page.results_view.start_timer()
+        self.solve_page.results_view.set_progress(0, iterations)
+        self.solve_page.results_view.status_label.setText(f"Solving {street_name}...")
+        self.solve_page.results_view.status_label.setStyleSheet("color: #ffaa00; font-size: 13px; font-weight: bold;")
+        
+        # 更新当前步骤显示
+        self.current_step = 2  # 回到 Solve 页面显示进度
+        self.stacked.setCurrentIndex(2)
+        self._update_step_indicator(2)
+        
+        # 保存用于完成后使用
+        self._next_street_board = new_board
+        self._next_street_oop_range = oop_range
+        self._next_street_ip_range = ip_range
+        self._next_street_pot = pot_size
+        self._next_street_name = street_name
+        
+        # 启动后台计算
+        self.solve_page.solve_btn.setEnabled(False)
+        self.solve_page.solve_btn.setText(f"Solving {street_name}...")
+        
+        self.worker = SolverWorker(
+            self.game_tree,
+            oop_range,
+            ip_range,
+            new_board,
+            iterations=iterations
+        )
+        self.worker.progress.connect(self._on_progress)
+        self.worker.finished.connect(self._on_next_street_finished)
+        self.worker.error.connect(self._on_solve_error)
+        self.worker.start()
+    
+    def _on_next_street_finished(self):
+        """下一条街解算完成"""
+        self.solve_page.solve_btn.setEnabled(True)
+        self.solve_page.solve_btn.setText("Start Solving")
+        self.solve_page.results_view.hide_progress()
+        self.solve_page.results_view.status_label.setText(f"✓ {self._next_street_name} solved!")
+        self.solve_page.results_view.status_label.setStyleSheet("color: #00ff00; font-size: 13px; font-weight: bold;")
+        
+        # 获取位置信息
+        oop_pos = self.range_page.oop_position or "OOP"
+        ip_pos = self.range_page.ip_position or "IP"
+        
+        # 获取迭代次数
+        iterations = self.solve_page.get_iterations()
+        
+        # 设置 Results 页面的数据
+        if self.worker and self.worker.engine:
+            self.results_page.set_data(
+                engine=self.worker.engine,
+                game_tree=self.game_tree,
+                board=self._next_street_board,
+                oop_range=self._next_street_oop_range,
+                ip_range=self._next_street_ip_range,
+                iterations=iterations,
+                oop_position=oop_pos,
+                ip_position=ip_pos,
+                pot_size=self._next_street_pot
+            )
+        
+        # 跳转到 Results 页面
+        self.current_step = 3
+        self.stacked.setCurrentIndex(3)
+        self._update_step_indicator(3)
+
 

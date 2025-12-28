@@ -483,3 +483,4 @@ class GTORangeDialog(QDialog):
                     return True
         return super().eventFilter(obj, event)
 
+

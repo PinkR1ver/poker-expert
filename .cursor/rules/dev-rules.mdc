@@ -38,48 +38,29 @@ alwaysApply: true
 
 ### 📚 项目文档结构
 
-本项目使用四个核心文档管理项目上下文（位于 `.cursor/rules/` 目录）：
+本项目使用四个核心规则文档（位于 `.cursor/rules/` 目录）：
 
-- **`project-context`**: 项目背景、目标、当前状态
-  - **用途**: 了解项目整体情况、已完成功能、待实现功能
-  - **何时查阅**: 开始新功能开发、更新项目状态时
+- **`project-context.mdc`**: 项目背景、目标、当前状态
+- **`dev-rules.mdc`**: 开发规则、环境管理、代码规范（本文档，alwaysApply: true）
+- **`architecture.mdc`**: 系统架构、模块设计、数据流
+- **`glossary.mdc`**: 术语表、概念定义
 
-- **`dev-rules`**: 开发规则、环境管理、代码规范（本文档，alwaysApply: true）
-  - **用途**: 开发规范、环境配置、文档维护规则
-  - **何时查阅**: 每次代码变更时自动应用
+**重要**: AI 助手在执行任务前应查阅相关文档，特别是 `project-context.mdc` 和 `architecture.mdc`。
 
-- **`architecture`**: 系统架构、模块设计、数据流
-  - **用途**: 了解系统架构、模块职责、数据流向
-  - **何时查阅**: 修改架构、添加新模块、理解数据流时
-
-- **`glossary`**: 术语表、概念定义
-  - **用途**: 查找专业术语、概念定义
-  - **何时查阅**: 遇到不熟悉的术语时
-
-**重要**: AI 助手在执行任务前应查阅相关文档，特别是 `@project-context` 和 `@architecture`，以确保理解项目上下文。
-
-### ⚠️ 重要：文档同步要求（精简版）
+### ⚠️ 重要：文档同步要求
 
 - 文档只记录**当前已经实现的模块和功能**，不要在规则里堆积还没做、已经废弃的想法。
 - 每次完成一段代码改动后：
-  1. 如果新增/调整了模块或类结构 → 更新 `@architecture` 中对应部分
-  2. 如果新增/调整了可见功能或页面 → 在 `@project-context` 的“已完成功能”中补充，必要时精简“待实现”
-  3. 如果新增/调整了开发流程或约定 → 更新本文件 `@dev-rules`
-  4. 如果引入了新的专业术语 → 在 `@glossary` 中补充
+  1. 如果新增/调整了模块或类结构 → 更新 `architecture.mdc` 中对应部分
+  2. 如果新增/调整了可见功能或页面 → 在 `project-context.mdc` 的"已完成功能"中补充
+  3. 如果新增/调整了开发流程或约定 → 更新本文件 `dev-rules.mdc`
+  4. 如果引入了新的专业术语 → 在 `glossary.mdc` 中补充
 
 ### 文档优先级
 
 当文档内容与代码不一致时：
 - **代码为准**：文档需要更新以反映实际实现
 - **设计文档为准**：如果是有计划的变更，先更新设计文档再实现
-
-### 文档更新检查清单
-
-在提交代码前，确认：
-- [ ] 相关文档已更新
-- [ ] 文档内容与实际代码一致
-- [ ] 新增功能已在 `@project-context` 中记录
-- [ ] 架构变更已在 `@architecture` 中反映
 
 ## Git 工作流
 
@@ -99,3 +80,27 @@ alwaysApply: true
 - 大数据量图表渲染使用适当的数据采样
 - 数据库查询使用索引优化（hand_id 为主键）
 
+## Solver 模块规范
+
+### 文件组织
+- Solver 核心逻辑放在 `solver/` 目录
+- Solver GUI 放在 `gui/pages/solver/` 目录
+
+### 性能调优
+- **Card Abstraction**：通过减少 bucket 数量控制树大小
+- **采样**：通过限制 CFR 采样数控制迭代时间
+- **日志**：关键步骤添加 `print()` 日志，格式为 `[模块名] 信息`
+
+### 参数调整位置
+| 参数 | 文件 | 变量 |
+|------|------|------|
+| Card Buckets 数量 | `solver/game_tree.py` | `_create_card_buckets()` 中的分类逻辑 |
+| Bet/Raise Sizes 限制 | `solver/game_tree.py` | `__init__()` 中的 `self.bet_sizes` |
+| Max Raises | `solver/game_tree.py` | `__init__()` 中的 `self.max_raises` |
+| CFR 采样数 | `solver/cfr_engine.py` | `solve()` 中的 `sample_size` |
+| Equity 采样数 | `solver/cfr_engine.py` | `_terminal_ev_hand()` 中的 `max_samples` |
+
+### 调试技巧
+- 终端会显示 `[GameTree]` 和 `[CFR]` 前缀的日志
+- 如果 solver 卡住，检查树的节点数（应该在几千以内）
+- 迭代次数建议 50-200 次（太多会很慢）
