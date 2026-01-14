@@ -7,35 +7,36 @@ alwaysApply: false
 
 ## 整体架构
 
-采用 **MVC-like 架构**，分为数据层、业务逻辑层和表现层：
+采用 **MVC-like 架构**，分为核心业务层、博弈解算层、数据存储层和 UI 展示层：
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│                 Presentation Layer (GUI)                       │
+│                 Presentation Layer (ui/)                       │
 │  ┌──────────┐ ┌──────────┐ ┌────────┐ ┌────────┐ ┌──────────┐ │
-│  │Dashboard │ │CashGame │ │ Import │ │ Report │ │  Replay  │ │
+│  │Dashboard │ │CashGame  │ │ Import │ │ Report │ │  Replay  │ │
 │  └──────────┘ └──────────┘ └────────┘ └────────┘ └──────────┘ │
 └────────────────────────────────────────────────────────────────┘
               ↓
-┌─────────────────────────────────────────┐
-│        Business Logic Layer             │
-│  ┌──────────────┐  ┌─────────────────┐ │
-│  │PokerParser   │  │EquityCalculator │ │
-│  └──────────────┘  └─────────────────┘ │
-└─────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────┐
+│                 Solver Layer (solver/)                         │
+│  ┌────────────────┐  ┌──────────────────┐  ┌────────────────┐  │
+│  │  solver/core   │  │  solver/bridge   │  │ solver/native  │  │
+│  │ (Logic/CFR)    │  │ (Python/C++ Link)│  │ (High Perf C++)│  │
+│  └────────────────┘  └──────────────────┘  └────────────────┘  │
+└────────────────────────────────────────────────────────────────┘
               ↓
-┌─────────────────────────────────────────┐
-│           Data Layer                     │
-│  ┌──────────────┐                       │
-│  │  DBManager   │                       │
-│  │  (SQLite)    │                       │
-│  └──────────────┘                       │
-└─────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────┐
+│                 Core Layer (core/)                             │
+│  ┌────────────────┐  ┌──────────────────┐  ┌────────────────┐  │
+│  │  core/parser   │  │  core/database   │  │  core/engine   │  │
+│  │ (PokerParser)  │  │ (DBManager)      │  │ (EquityCalc)   │  │
+│  └────────────────┘  └──────────────────┘  └────────────────┘  │
+└────────────────────────────────────────────────────────────────┘
 ```
 
 ## 核心模块
 
-### 1. 数据解析层 (`poker_parser.py`)
+### 1. 数据解析层 (`core/parser/poker_parser.py`)
 
 **职责**: 解析 GGPoker 手牌历史文本文件
 
@@ -45,7 +46,7 @@ alwaysApply: false
   - 盈利数据：net_profit, rake, total_pot, insurance_premium
   - 分析数据：showdown_winnings, non_showdown_winnings, all_in_ev
 
-### 2. 数据存储层 (`db_manager.py`)
+### 2. 数据存储层 (`core/database/db_manager.py`)
 
 **职责**: SQLite 数据库操作
 
@@ -55,9 +56,9 @@ alwaysApply: false
 - `get_all_hands()`: 获取所有手牌
 - `get_graph_data(start_date, end_date)`: 获取图表数据
 
-### 3. Postflop Solver 模块
+### 3. Postflop Solver 核心逻辑 (`solver/core/`)
 
-**核心数据结构** (`solver/data_types.py`):
+**核心数据结构** (`solver/core/data_types.py`):
 ```python
 @dataclass
 class Node:
@@ -71,51 +72,59 @@ class Node:
     chance_children: Optional[Dict[Card, Node]] = None
 ```
 
-**Game Tree 构建** (`solver/game_tree.py`):
+**Game Tree 构建** (`solver/core/game_tree.py`):
 - Player Node: 玩家决策节点
 - Chance Node: 发牌节点（Turn/River）
 - Terminal Node: 游戏结束节点
-- Card Abstraction: 按 rank 分类减少树规模
+- Card Abstraction: 按 rank 分类（最多 13 个 bucket）
+- **Effective Stack 限制**: bet/raise 尺度受双方筹码限制
+- **All-in 支持**: 筹码不足时自动添加 all-in 选项
 
-**CFR 算法** (`solver/cfr_engine.py`):
+**CFR 算法** (`solver/core/cfr_engine.py`):
 - Discounted CFR (DCFR) 手牌级别策略
 - Player Node: 标准 CFR 更新
 - Chance Node: 按概率加权 EV
 - Terminal Node: 计算 showdown equity
+- **动态采样**: 早期多探索（12 combos），后期加速（5 combos）
+- **真实 Regret 追踪**: 记录每次迭代的即时 regret
 
-### 4. 表现层 (GUI)
+### 4. C++ Solver 高性能模块 (`solver/native/`)
 
-**页面模块** (`gui/pages/`):
-- `dashboard.py`: Dashboard 页面
-- `cash_game.py`: CashGamePage, CashGameGraphPage
-- `import_page.py`: ImportPage
-- `replay.py`: ReplayPage
-- `preflop_range.py`: GTO Range 查表
-- `leak_analyze/`: Leak 分析模块
-- `solver/`: Postflop Solver 模块
-- `reports/`: 报告模块
+**目标**: 将性能关键代码用 C++ 重写，提速 20-100x，支持超大规模博弈树。
+
+**架构组件**:
+- **MmapBuffer**: 核心存储层。通过 `mmap` 将博弈树节点存储在磁盘文件（`tmp/nodes.bin` 等），支持 sparse file，允许构建超过物理内存限制的巨型树。
+- **GameTreeBuilder**: 递归构建博弈树。集成 **Transposition Table** 进行状态去重，确保相同的博弈状态（Board + Pot + Stacks + Street）共享同一个节点。
+- **CppCFREngine**: DCFR 算法核心。直接在 Mmap 内存空间上执行 Regret 更新，通过 `NodeRegrets` 结构管理每个 combo 的策略。
+- **HandEvaluator**: 高性能评估器。支持 7-card evaluation 和 Monte Carlo Equity 模拟。
+
+**桥接层** (`solver/bridge/cpp_cfr_wrapper.py`):
+- 使用 **NodeProxy** 保证 Python 侧访问的是 C++ 内存中的实时数据，避免 Python 对象全量转换。
+- 处理 C++ 加速引擎的加载与回退逻辑。
+
+### 5. UI 展示层 (`ui/`)
+
+**主要目录**:
+- `ui/pages/`: 各功能主页面（ResultsPage, SolverPage 等）
+- `ui/widgets/`: 通用 UI 组件
+- `ui/styles/`: 全局 QSS 样式
 
 ## 数据流
 
-### 导入流程
-```
-用户选择文件 → ImportWorker (QThread) → PokerParser → DBManager → data_changed 信号 → 页面刷新
-```
-
 ### Solver 流程
 ```
-Range 设置 → Settings → GameTreeBuilder 构建树 → DCFREngine.solve() → Results 页面导航
+用户配置 (Python UI) → SolverWorker → C++ build_tree (Mmap) → C++ solve (DCFR) → NodeProxy (Python Wrapper) → Results UI
 ```
 
 ## 线程模型
 
-- **主线程**: GUI 事件循环
-- **工作线程**: ImportWorker, SolverWorker (QThread)
-  - 通过 Signal 与主线程通信
-  - 每个线程独立的 DBManager 实例
+- **主线程**: GUI 事件循环，处理用户交互。
+- **Solver 线程**: C++ 解算核心。通过 Pybind11 释放 GIL 进行多线程计算，通过 Callback 回传进度。
+- **数据一致性**: 使用 `NodeProxy` 保证数据视图同步。
 
 ## 设计模式
 
 - **单例模式**: DBManager（每个线程一个实例）
 - **观察者模式**: Qt Signal/Slot 机制
 - **工厂模式**: parse_hand() 创建 PokerHand 对象
+- **代理模式**: NodeProxy 代理 C++ 节点数据

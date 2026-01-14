@@ -30,47 +30,118 @@ alwaysApply: false
 - ✅ **Postflop Solver 页面**：
   - 多步骤向导：Range → Settings → Solve → Results
   - 完整多街 Solver（Flop → Turn → River）
-  - Discounted CFR 算法
+  - Discounted CFR 算法（手牌级别策略）
+  - Card Abstraction（按 rank 分类，最多 13 个 bucket）
+  - Effective Stack 限制（考虑双方筹码限制 bet/raise 尺度）
+  - All-in 选项支持
   - Game Tree 导航 + Range 过滤
-  - Equity/Convergence 图表
+  - Board Blocker 检测（range 显示考虑公共牌阻挡）
+  - Combo 级别 Equity 显示（每个花色组合独立计算）
+  - Equity/Convergence 真实历史图表
+  - 并行计算选项
 
-### Solver 性能说明
+### Solver 当前配置
 
-当前优化配置（为可用性牺牲精度）：
-| 参数 | 当前值 |
-|------|--------|
-| Card Buckets | 按 rank 分类 |
-| Max Raises | 2/街 |
-| CFR 采样 | 动态 5-12 combos |
-| Equity 采样 | 4 对手，2 模拟 |
+| 参数 | 当前值 | 说明 |
+|------|--------|------|
+| Card Abstraction | 按 rank 分类 | 最多 13 个 bucket |
+| Max Raises | 2/街 | 用户可配置 |
+| CFR 采样 | 动态 5-12 combos | 早期多探索，后期加速 |
+| Equity 采样 | 4 对手，2 模拟 | 速度优先 |
+| Effective Stack | ✅ 已实现 | 限制 bet/raise 尺度 |
+| All-in 选项 | ✅ 已实现 | 筹码不足时自动添加 |
+
+## 🚀 C++ Solver 加速
+
+### 已完成
+- ✅ **Phase 1**: C++ Hand Evaluator + Equity Calculator
+  - 手牌评估（5 张牌 → 7 张牌最佳组合）
+  - Monte Carlo equity 计算
+  - pybind11 绑定，自动检测并使用
+  - **性能提升: 20x**
+
+- ✅ **Phase 2**: C++ CFR Engine
+  - 完整的 DCFR 算法实现（支持 Gamma 衰减策略更新）
+  - Game Tree 扁平化表示，基于 **MmapBuffer** 的磁盘映射存储
+  - **Perfect Deduplication**: 使用状态哈希进行博弈树节点去重
+  - Python Wrapper（`solver/bridge/cpp_cfr_wrapper.py`）提供 lazy-loading 代理（NodeProxy）
+  - 与 Python 版本 API 兼容
+
+- ✅ **Phase 3**: 性能与规模优化
+  - 磁盘映射支持千万级节点，突破内存限制
+  - 策略计算提速 10x+，支持 Flop/Turn/River 全场景
+  - 改进的 Betting 逻辑，支持 Separate Bet/Raise Sizing
+  - 支持 River All-in 面对下注的正确响应逻辑
+
+### 性能对比
+
+| 操作 | Python | C++ | 加速比 |
+|------|--------|-----|--------|
+| Equity (50k sims) | ~3000ms | ~150ms | **20x** |
+| Hand Evaluation | ~0.1ms | ~0.005ms | **20x** |
+| CFR (30 iters, Turn) | 5.73s | 0.45s | **12.7x** |
+| Tree Building (Large) | 120s+ (OOM risk) | < 2s | **60x+** |
+
+### OpenMP 多线程支持
+- ✅ 已启用（10 线程）
+- 需要安装 `brew install libomp`
+
+### 待完成
+- ⏳ **Phase 4**: Equity 缓存优化（预期 2-5x 额外提升）
+
+### C++ 模块结构
+```
+solver/native/
+├── CMakeLists.txt          # CMake 构建配置
+├── include/
+│   ├── types.h             # 核心数据结构（CardInt, HandRank）
+│   ├── hand_evaluator.h    # 评估器接口
+│   ├── cfr_types.h         # CFR 数据结构
+│   └── cfr_engine.h        # CFR Engine 接口
+├── src/
+│   ├── hand_evaluator.cpp  # ✅ 手牌评估
+│   └── cfr_engine.cpp      # ✅ CFR 算法
+└── bindings.cpp            # pybind11 绑定
+```
+
+### 编译命令
+```bash
+cd solver/native
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+make -j4
+cp poker_solver_cpp.cpython-*.so ../..
+```
 
 ## 技术栈
 
-- **语言**: Python 3.11+
+- **语言**: Python 3.12 (GUI) + C++17 (Solver 核心)
 - **GUI 框架**: PySide6 (Qt for Python)
 - **数据库**: SQLite3
 - **数据可视化**: Matplotlib
 - **环境管理**: Conda
+- **C++ 工具链**: CMake + pybind11 + Apple Clang 16
 
-## 项目结构
+## 项目结构 (Vibe Coding Structure)
 
 ```
 poker-expert/
-├── main.py                 # 应用入口
-├── poker_parser.py         # 手牌历史解析器
-├── db_manager.py           # 数据库管理
-├── equity_calculator.py    # All-in EV 计算
-├── solver/                 # Postflop Solver 模块
-│   ├── data_types.py       # 核心数据结构
-│   ├── game_tree.py        # Game Tree 构建器
-│   ├── cfr_engine.py       # CFR 算法
-│   ├── card_utils.py       # 牌工具函数
-│   └── hand_evaluator.py   # 手牌评估
-├── gui/                    # GUI 模块
-│   ├── main_window.py
+├── core/                   # 核心业务逻辑
+│   ├── database/           # 数据库管理
+│   ├── engine/             # 核心引擎 (EquityCalc)
+│   └── parser/             # 手牌解析
+├── solver/                 # 解算器逻辑
+│   ├── core/               # 算法核心 (CFR, GameTree)
+│   ├── native/             # C++ 源码
+│   └── bridge/             # Python/C++ 桥接
+├── ui/                     # 界面展示层
 │   ├── pages/              # 页面模块
-│   └── widgets/            # 自定义 widgets
-└── assets/range/           # GTO Range 数据
+│   ├── widgets/            # 自定义组件
+│   └── styles/             # 全局样式
+├── assets/                 # 静态资源
+├── scripts/                # 构建与维护脚本
+├── tests/                  # 测试用例
+└── main.py                 # 应用启动入口
 ```
 
 ## 关键概念
@@ -78,5 +149,7 @@ poker-expert/
 - **Hero**: 玩家自己
 - **GTO**: Game Theory Optimal，博弈论最优策略
 - **CFR**: Counterfactual Regret Minimization，反事实后悔最小化算法
+- **Effective Stack**: 双方中较小的筹码，决定最大可能的行动
+- **Card Abstraction**: 将相似的牌归类以减少计算量
 - **bb/100**: 每百手大盲盈利
 - **OOP/IP**: Out of Position / In Position

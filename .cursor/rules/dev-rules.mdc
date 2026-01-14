@@ -8,7 +8,7 @@ alwaysApply: true
 ## 环境管理
 
 ### 1. 虚拟环境规则
-- **禁止使用 venv**：不要创建或使用 Python 虚拟环境 (venv)
+- **禁止使用 venv**：不要创建 or 使用 Python 虚拟环境 (venv)
 - **使用 Conda 环境**：项目使用 `.conda` 环境，通过 `conda activate` 激活
 - **依赖管理**：所有需要的 Python 包都写入 `requirements.txt`，用户会自行使用 `pip install -r requirements.txt` 安装
 
@@ -20,9 +20,13 @@ alwaysApply: true
 ## 代码规范
 
 ### 1. 文件组织
-- GUI 相关代码放在 `gui/` 目录
-- 核心业务逻辑（parser, db_manager）放在项目根目录
-- 工具类（equity_calculator）放在项目根目录
+- **`core/`**: 核心业务逻辑 (parser, database, engine)
+- **`solver/`**: 解算器逻辑
+  - `solver/core/`: 算法核心 (CFR, GameTree)
+  - `solver/native/`: C++ 源码
+  - `solver/bridge/`: Python/C++ 桥接
+- **`ui/`**: 界面相关代码 (pages, widgets, styles)
+- **`scripts/`**: 构建与维护脚本
 
 ### 2. 命名规范
 - 类名使用 `PascalCase`（如 `PokerHand`, `DBManager`）
@@ -83,24 +87,66 @@ alwaysApply: true
 ## Solver 模块规范
 
 ### 文件组织
-- Solver 核心逻辑放在 `solver/` 目录
-- Solver GUI 放在 `gui/pages/solver/` 目录
+- Solver 核心逻辑放在 `solver/core/` 目录
+- Solver UI 放在 `ui/pages/solver/` 目录
+- C++ 实现放在 `solver/native/` 目录
 
 ### 性能调优
-- **Card Abstraction**：通过减少 bucket 数量控制树大小
-- **采样**：通过限制 CFR 采样数控制迭代时间
+- **Card Abstraction**：按 rank 分类（最多 13 个 bucket）
+- **Effective Stack**：bet/raise 尺度受双方筹码限制
+- **动态采样**：早期多探索，后期加速收敛
 - **日志**：关键步骤添加 `print()` 日志，格式为 `[模块名] 信息`
 
 ### 参数调整位置
 | 参数 | 文件 | 变量 |
-|------|------|------|
-| Card Buckets 数量 | `solver/game_tree.py` | `_create_card_buckets()` 中的分类逻辑 |
-| Bet/Raise Sizes 限制 | `solver/game_tree.py` | `__init__()` 中的 `self.bet_sizes` |
-| Max Raises | `solver/game_tree.py` | `__init__()` 中的 `self.max_raises` |
-| CFR 采样数 | `solver/cfr_engine.py` | `solve()` 中的 `sample_size` |
-| Equity 采样数 | `solver/cfr_engine.py` | `_terminal_ev_hand()` 中的 `max_samples` |
+|---|---|---|
+| Card Abstraction | `solver/core/game_tree.py` | `_create_card_buckets()` |
+| Effective Stack | `solver/core/game_tree.py` | `_get_available_actions()` |
+| Max Raises | `solver/core/game_tree.py` | `__init__()` 中的 `self.max_raises` |
+| CFR 采样数 | `solver/core/cfr_engine.py` | `solve()` 中的 `base_sample` |
+| Equity 采样数 | `solver/core/cfr_engine.py` | `_terminal_ev_hand()` 中的 `max_samples` |
 
 ### 调试技巧
 - 终端会显示 `[GameTree]` 和 `[CFR]` 前缀的日志
-- 如果 solver 卡住，检查树的节点数（应该在几千以内）
+- 如果 solver卡住，检查树的节点数（应该在几千以内）
 - 迭代次数建议 50-200 次（太多会很慢）
+
+## C++ Solver 编译与开发规范
+
+### 目录结构
+```
+solver/native/
+├── CMakeLists.txt      # CMake 构建配置
+├── src/
+│   ├── cfr_engine.cpp
+│   ├── game_tree_builder.cpp
+│   └── hand_evaluator.cpp
+├── include/
+│   ├── types.h
+│   ├── mmap_buffer.h
+│   └── ...
+└── bindings.cpp        # pybind11 绑定
+```
+
+### 编译流程 (Compilation Knowledge)
+1. **环境准备**：确保已安装 CMake (3.14+) 和支持 C++17 的编译器。
+2. **构建步骤**：
+   ```bash
+   cd solver/native
+   mkdir -p build
+   cd build
+   cmake ..
+   make -j
+   ```
+3. **产物管理**：编译生成的 `.so` (Linux/macOS) 或 `.pyd` (Windows) 文件应移动或链接到 `solver/` 根目录下，以便 Python 桥接层 `solver/bridge/cpp_cfr_wrapper.py` 加载。
+
+### 编译要求
+- C++17 或更高
+- pybind11 (通常通过 CMake 自动查找)
+- 内存映射支持 (MmapBuffer 要求系统支持 mmap)
+
+### 代码规范
+- 使用 `snake_case` 命名（与 Python 保持一致）
+- 核心数据结构使用 `struct`
+- 性能关键路径避免动态内存分配
+- 使用 `std::vector` 或 `MmapBuffer` 存储大数据，避免频繁分配

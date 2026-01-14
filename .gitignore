@@ -3,3 +3,16 @@
 .conda/
 __pycache__/
 .DB_Store/
+
+# C++ Compilation Artifacts
+*.so
+*.dylib
+*.dll
+*.bin
+build/
+bin/
+/solver/native/build/
+/solver/poker_solver_cpp*.so
+/tmp/*.bin
+/.cursor/debug.log
+/tmp
